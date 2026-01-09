@@ -115,10 +115,10 @@ class DocumentHistory(db.Model):
 
 # Store users in memory (in a real app, this would be a database)
 USERS = {
-    'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin'},
-    'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor'},
-    'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user'},
-    'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com', 'role': 'editor'}
+    'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'light'},
+    'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'light'},
+    'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'light'},
+    'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com', 'role': 'editor', 'theme': 'dark'}
 }
 
 # Store document history in memory
@@ -792,9 +792,9 @@ BASE_TEMPLATE = """
             object-fit: cover;
         }}
 
-        /* X-inspired content width limitation */
+        /* X-inspired content width limitation - 8 inches at 96 DPI */
         .container {{
-            max-width: 600px;
+            max-width: 768px;
             margin: 0 auto;
             padding-left: 20px;
             padding-right: 20px;
@@ -942,8 +942,9 @@ BASE_TEMPLATE = """
         const html = document.documentElement;
         const icon = themeToggle.querySelector('i');
 
-        // Load saved theme
-        const savedTheme = localStorage.getItem('theme') || 'light';
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -1432,6 +1433,24 @@ PROFILE_TEMPLATE = """
                         </div>
                         <button type="submit" class="btn btn-warning">Change Password</button>
                     </form>
+
+                    <hr>
+
+                    <!-- Theme Preferences -->
+                    <h5>Theme Preferences</h5>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="update_theme">
+                        <div class="mb-3">
+                            <label class="form-label">Preferred Theme</label>
+                            <select class="form-select" name="theme" id="theme-select">
+                                <option value="light" {'selected' if current_user_theme == 'light' else ''}>Light Mode</option>
+                                <option value="dark" {'selected' if current_user_theme == 'dark' else ''}>Dark Mode</option>
+                                <option value="auto" {'selected' if current_user_theme == 'auto' else ''}>Auto (System)</option>
+                            </select>
+                            <div class="form-text">Choose your preferred theme. Auto will follow your system's preference.</div>
+                        </div>
+                        <button type="submit" class="btn btn-secondary">Save Theme Preference</button>
+                    </form>
                 </div>
             </div>
         </div>
@@ -1463,6 +1482,8 @@ def login():
         
         if username in USERS and USERS[username]['password'] == password:
             session['user'] = username
+            # Set user's preferred theme in session
+            session['theme'] = USERS[username].get('theme', 'light')
             flash(f'Welcome back, {USERS[username]["name"]}!', 'success')
             return redirect(url_for('home'))
         else:
@@ -1538,12 +1559,20 @@ def profile():
         elif action == 'update_profile':
             name = request.form.get('name', '').strip()
             email = request.form.get('email', '').strip()
-            
+
             if name:
                 USERS[session['user']]['name'] = name
             if email:
                 USERS[session['user']]['email'] = email
             flash('Profile updated successfully!', 'success')
+
+        elif action == 'update_theme':
+            theme = request.form.get('theme', 'light').strip()
+            if theme in ['light', 'dark', 'auto']:
+                USERS[session['user']]['theme'] = theme
+                flash('Theme preference updated successfully!', 'success')
+            else:
+                flash('Invalid theme selection.', 'error')
     
     # Generate user menu
     user_menu = f"""
@@ -1561,6 +1590,7 @@ def profile():
     profile_content = PROFILE_TEMPLATE.format(
         current_user_name=current_user['name'],
         current_user_email=current_user['email'],
+        current_user_theme=current_user.get('theme', 'light'),
         session_user=session['user']
     )
     return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF Datatracker", user_menu=user_menu, content=profile_content))
