@@ -175,6 +175,33 @@ def get_current_user():
         return USERS.get(session['user'])
     return None
 
+def generate_user_menu():
+    """Generate user menu HTML for navbar"""
+    current_user = get_current_user()
+    if current_user:
+        user_role = current_user.get('role', 'user')
+        return f"""
+        <div class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                {current_user['name']}
+            </a>
+            <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="/admin/">Admin Dashboard</a></li>
+                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
+                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
+            </ul>
+        </div>
+        """
+    else:
+        return """
+        <div class="nav-item">
+            <a class="nav-link" href="/login/">Sign In</a>
+        </div>
+        <div class="nav-item">
+            <a class="nav-link" href="/register/">Register</a>
+        </div>
+        """
+
 def add_to_document_history(draft_name, action, user, details=""):
     """Add an entry to document history"""
     if draft_name not in DOCUMENT_HISTORY:
@@ -857,7 +884,7 @@ BASE_TEMPLATE = """
 
         /* Dropdown menu z-index fix */
         .dropdown-menu {{
-            z-index: 1050;
+            z-index: 1100;
             border-radius: 12px;
             border: 1px solid var(--border-color);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -1572,17 +1599,7 @@ def profile():
                 flash('Invalid theme selection.', 'error')
     
     # Generate user menu
-    user_menu = f"""
-    <div class="nav-item dropdown">
-        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-            {current_user['name']}
-        </a>
-        <ul class="dropdown-menu">
-            <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-            <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-        </ul>
-    </div>
-    """
+    user_menu = generate_user_menu()
     
     current_theme = current_user.get('theme', 'light')
     light_selected = 'selected' if current_theme == 'light' else ''
@@ -1638,8 +1655,8 @@ def home():
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <h1>IETF Datatracker</h1>
-                <p class="lead">The day-to-day front-end to the IETF database for people who work on IETF standards.</p>
+                <h1>MLTF Datatracker</h1>
+                <p class="lead">The day-to-day front-end to the MLTF database for people who work on Meta-Layer standards.</p>
                 
                 <div class="row">
                     <div class="col-md-6">
@@ -1648,7 +1665,7 @@ def home():
                                 <h5>Recent Documents</h5>
                             </div>
                             <div class="card-body">
-                                <p>View the latest IETF documents including drafts, RFCs, and other standards.</p>
+                                <p>View the latest MLTF documents including drafts, RFCs, and other standards.</p>
                                 <a href="/doc/all/" class="btn btn-primary">View All Documents</a>
                             </div>
                         </div>
@@ -1659,7 +1676,7 @@ def home():
                                 <h5>Working Groups</h5>
                             </div>
                             <div class="card-body">
-                                <p>Browse IETF working groups and their activities.</p>
+                                <p>Browse MLTF working groups and their activities.</p>
                                 <a href="/group/" class="btn btn-primary">View Working Groups</a>
                             </div>
                         </div>
@@ -1673,7 +1690,7 @@ def home():
                                 <h5>Meetings</h5>
                             </div>
                             <div class="card-body">
-                                <p>Information about IETF meetings and sessions.</p>
+                                <p>Information about MLTF meetings and sessions.</p>
                                 <a href="/meeting/" class="btn btn-primary">View Meetings</a>
                             </div>
                         </div>
@@ -1684,7 +1701,7 @@ def home():
                                 <h5>People</h5>
                             </div>
                             <div class="card-body">
-                                <p>Directory of IETF participants and contributors.</p>
+                                <p>Directory of MLTF participants and contributors.</p>
                                 <a href="/person/" class="btn btn-primary">View People</a>
                             </div>
                         </div>
@@ -1714,6 +1731,7 @@ def active_documents():
 
 @app.route('/doc/all/')
 def all_documents():
+    user_menu = generate_user_menu()
     docs_html = ""
     for draft in DRAFTS:
         docs_html += f"""
@@ -1753,7 +1771,7 @@ def all_documents():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>All Documents - IETF Datatracker</title>
+    <title>All Documents - MLTF Datatracker</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         .navbar-brand {{ font-weight: bold; }}
@@ -1768,12 +1786,21 @@ def all_documents():
         <div class="container">
             <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
         </div>
     </nav>
@@ -1788,6 +1815,46 @@ def all_documents():
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
@@ -1804,7 +1871,7 @@ def draft_detail(draft_name):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{draft['name']} - IETF Datatracker</title>
+    <title>{draft['name']} - MLTF Datatracker</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         .navbar-brand {{ font-weight: bold; }}
@@ -1819,12 +1886,21 @@ def draft_detail(draft_name):
         <div class="container">
             <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
         </div>
     </nav>
@@ -1867,7 +1943,7 @@ def draft_detail(draft_name):
                             <li>References</li>
                             <li>Author information</li>
                         </ul>
-                        <p><strong>Abstract:</strong> This document describes the sample IETF draft {draft['name']}. It provides a framework for understanding how IETF documents are structured and managed within the datatracker system.</p>
+                        <p><strong>Abstract:</strong> This document describes the sample MLTF draft {draft['name']}. It provides a framework for understanding how MLTF documents are structured and managed within the datatracker system.</p>
                     </div>
                 </div>
             </div>
@@ -1898,12 +1974,53 @@ def draft_detail(draft_name):
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
 
 @app.route('/group/')
 def groups():
+    user_menu = generate_user_menu()
     groups_html = ""
     for group in GROUPS:
         groups_html += f"""
@@ -1950,12 +2067,21 @@ def groups():
         <div class="container">
             <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
         </div>
     </nav>
@@ -1970,6 +2096,46 @@ def groups():
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
@@ -2085,12 +2251,21 @@ def draft_comments(draft_name):
         <div class="container">
             <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
         </div>
     </nav>
@@ -2253,12 +2428,21 @@ def draft_history(draft_name):
         <div class="container">
             <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
         </div>
     </nav>
@@ -2300,6 +2484,46 @@ def draft_history(draft_name):
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
@@ -2367,12 +2591,21 @@ def draft_revisions(draft_name):
         <div class="container">
             <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
         </div>
     </nav>
@@ -2430,6 +2663,46 @@ def draft_revisions(draft_name):
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
@@ -2461,6 +2734,12 @@ def meetings():
                 <a class="nav-link active" href="/meeting/">Meetings</a>
                 <a class="nav-link" href="/person/">People</a>
             </div>
+            <div class="navbar-nav ms-auto">
+                {user_menu}
+                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                    <i class="fas fa-moon"></i>
+                </button>
+            </div>
         </div>
     </nav>
 
@@ -2488,6 +2767,46 @@ def meetings():
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
@@ -2547,6 +2866,46 @@ def people():
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
