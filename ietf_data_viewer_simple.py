@@ -792,6 +792,14 @@ BASE_TEMPLATE = """
             object-fit: cover;
         }}
 
+        /* X-inspired content width limitation */
+        .container {{
+            max-width: 600px;
+            margin: 0 auto;
+            padding-left: 20px;
+            padding-right: 20px;
+        }}
+
         /* Responsive adjustments */
         @media (max-width: 768px) {{
             .navbar-brand {{
@@ -814,6 +822,18 @@ BASE_TEMPLATE = """
 
             .card-header {{
                 border-radius: 12px 12px 0 0 !important;
+            }}
+
+            .container {{
+                padding-left: 15px;
+                padding-right: 15px;
+            }}
+        }}
+
+        @media (min-width: 1200px) {{
+            .container {{
+                padding-left: 40px;
+                padding-right: 40px;
             }}
         }}
 
