@@ -1443,9 +1443,9 @@ PROFILE_TEMPLATE = """
                         <div class="mb-3">
                             <label class="form-label">Preferred Theme</label>
                             <select class="form-select" name="theme" id="theme-select">
-                                <option value="light" {'selected' if current_user_theme == 'light' else ''}>Light Mode</option>
-                                <option value="dark" {'selected' if current_user_theme == 'dark' else ''}>Dark Mode</option>
-                                <option value="auto" {'selected' if current_user_theme == 'auto' else ''}>Auto (System)</option>
+                                <option value="light" {light_selected}>Light Mode</option>
+                                <option value="dark" {dark_selected}>Dark Mode</option>
+                                <option value="auto" {auto_selected}>Auto (System)</option>
                             </select>
                             <div class="form-text">Choose your preferred theme. Auto will follow your system's preference.</div>
                         </div>
@@ -1587,10 +1587,18 @@ def profile():
     </div>
     """
     
+    current_theme = current_user.get('theme', 'light')
+    light_selected = 'selected' if current_theme == 'light' else ''
+    dark_selected = 'selected' if current_theme == 'dark' else ''
+    auto_selected = 'selected' if current_theme == 'auto' else ''
+
     profile_content = PROFILE_TEMPLATE.format(
         current_user_name=current_user['name'],
         current_user_email=current_user['email'],
-        current_user_theme=current_user.get('theme', 'light'),
+        current_user_theme=current_theme,
+        light_selected=light_selected,
+        dark_selected=dark_selected,
+        auto_selected=auto_selected,
         session_user=session['user']
     )
     return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF Datatracker", user_menu=user_menu, content=profile_content))
