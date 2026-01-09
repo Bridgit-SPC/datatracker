@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-IETF Data Viewer - Shows the IETF datatracker data from test files
-This displays the actual IETF data so you can see it working before we transform it to MLTF.
+MLTF Data Viewer - Shows the MLTF datatracker data from test files
+This displays the Meta-Layer Task Force data so you can see it working.
 """
 
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session, send_file
@@ -318,8 +318,8 @@ def render_comment_tree(comments, draft_name, level=0):
     html += '</div>'
     return html
 
-# Real IETF participant names (from actual IETF community)
-IETF_PARTICIPANTS = [
+# Sample participant names for testing
+SAMPLE_PARTICIPANTS = [
     "Henrik Levkowetz", "John Klensin", "Dave Crocker", "Marshall Rose", "Erik Nordmark",
     "Scott Bradner", "Brian Carpenter", "Fred Baker", "Harald Alvestrand", "Vint Cerf",
     "Bob Hinden", "Steve Deering", "Randy Bush", "Geoff Huston", "Tony Hain",
@@ -330,7 +330,7 @@ IETF_PARTICIPANTS = [
     "Dennis Ritchie", "Ken Thompson", "Brian Kernighan", "Rob Pike", "Russ Cox"
 ]
 
-# Load IETF data from test files
+# Load MLTF data from test files
 def load_draft_data():
     """Load draft data from test files"""
     drafts = []
@@ -343,7 +343,7 @@ def load_draft_data():
                 match = re.search(r'xfilter-draft-([^:]+):', line)
                 if match:
                     draft_name = match.group(1)
-                    # Create realistic IETF draft information
+                    # Create realistic MLTF draft information
                     draft_title = draft_name.replace('-', ' ').title()
                     drafts.append({
                         'name': f'draft-{draft_name}',
@@ -497,31 +497,424 @@ BASE_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        .navbar-brand {{ font-weight: bold; }}
-        .avatar {{ font-size: 14px; }}
+        :root {{
+            /* Light theme (default) */
+            --bg-color: #ffffff;
+            --bg-secondary: #f7f9fa;
+            --bg-tertiary: #e1e8ed;
+            --text-primary: #14171a;
+            --text-secondary: #657786;
+            --text-muted: #aab8c2;
+            --border-color: #e1e8ed;
+            --border-hover: #ccd6dd;
+            --accent-color: #1d9bf0;
+            --accent-hover: #1a8cd8;
+            --success-color: #00ba7c;
+            --warning-color: #f7b529;
+            --error-color: #f4212e;
+            --navbar-bg: #ffffff;
+            --navbar-text: #14171a;
+            --navbar-border: #e1e8ed;
+            --card-bg: #ffffff;
+            --card-border: #e1e8ed;
+            --input-bg: #ffffff;
+            --input-border: #657786;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.15);
+        }}
+
+        [data-theme="dark"] {{
+            /* Dark theme */
+            --bg-color: #000000;
+            --bg-secondary: #16181c;
+            --bg-tertiary: #1d1f23;
+            --text-primary: #ffffff;
+            --text-secondary: #8b98a5;
+            --text-muted: #6c7b8a;
+            --border-color: #2f3336;
+            --border-hover: #3d4043;
+            --accent-color: #1d9bf0;
+            --accent-hover: #1a8cd8;
+            --success-color: #00ba7c;
+            --warning-color: #f7b529;
+            --error-color: #f4212e;
+            --navbar-bg: #16181c;
+            --navbar-text: #ffffff;
+            --navbar-border: #2f3336;
+            --card-bg: #16181c;
+            --card-border: #2f3336;
+            --input-bg: #16181c;
+            --input-border: #3d4043;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.4);
+        }}
+
+        * {{
+            box-sizing: border-box;
+        }}
+
+        body {{
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.5;
+            margin: 0;
+            min-height: 100vh;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }}
+
+        /* Modern navbar similar to X */
+        .navbar {{
+            background-color: var(--navbar-bg) !important;
+            border-bottom: 1px solid var(--navbar-border);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            box-shadow: var(--shadow);
+            padding: 0;
+            height: 53px;
+        }}
+
+        .navbar-brand {{
+            color: var(--navbar-text) !important;
+            font-weight: 700;
+            font-size: 18px;
+            padding: 16px 20px;
+            margin: 0;
+        }}
+
+        .navbar-brand:hover {{
+            color: var(--accent-color) !important;
+        }}
+
+        .navbar-nav {{
+            align-items: center;
+        }}
+
+        .nav-link {{
+            color: var(--text-secondary) !important;
+            font-weight: 500;
+            padding: 16px 20px;
+            margin: 0;
+            border-radius: 0;
+            transition: all 0.2s ease;
+        }}
+
+        .nav-link:hover {{
+            background-color: var(--bg-secondary);
+            color: var(--accent-color) !important;
+        }}
+
+        .nav-link.active {{
+            color: var(--accent-color) !important;
+            border-bottom: 3px solid var(--accent-color);
+            background-color: transparent;
+        }}
+
+        /* Theme toggle button */
+        .theme-toggle {{
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 18px;
+            padding: 16px 20px;
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }}
+
+        .theme-toggle:hover {{
+            color: var(--accent-color);
+        }}
+
+        /* Cards with modern styling */
+        .card {{
+            background-color: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            transition: all 0.2s ease;
+        }}
+
+        .card:hover {{
+            box-shadow: var(--shadow-hover);
+            border-color: var(--border-hover);
+        }}
+
+        .card-header {{
+            background-color: transparent;
+            border-bottom: 1px solid var(--card-border);
+            border-radius: 16px 16px 0 0 !important;
+            padding: 16px 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }}
+
+        .card-body {{
+            padding: 20px;
+        }}
+
+        /* Buttons styled like X */
+        .btn {{
+            border-radius: 20px;
+            font-weight: 700;
+            padding: 8px 16px;
+            transition: all 0.2s ease;
+        }}
+
+        .btn-primary {{
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
+        }}
+
+        .btn-primary:hover {{
+            background-color: var(--accent-hover);
+            border-color: var(--accent-hover);
+            transform: translateY(-1px);
+        }}
+
+        .btn-outline-primary {{
+            border-color: var(--text-secondary);
+            color: var(--text-primary);
+        }}
+
+        .btn-outline-primary:hover {{
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
+        }}
+
+        .btn-outline-secondary {{
+            border-color: var(--border-color);
+            color: var(--text-secondary);
+        }}
+
+        .btn-outline-secondary:hover {{
+            background-color: var(--bg-secondary);
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+        }}
+
+        /* Form inputs */
+        .form-control {{
+            background-color: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            padding: 12px 16px;
+            transition: all 0.2s ease;
+        }}
+
+        .form-control:focus {{
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
+            background-color: var(--input-bg);
+        }}
+
+        .form-control::placeholder {{
+            color: var(--text-muted);
+        }}
+
+        /* Alerts */
+        .alert {{
+            border-radius: 12px;
+            border: none;
+            padding: 16px 20px;
+        }}
+
+        .alert-info {{
+            background-color: rgba(29, 155, 240, 0.1);
+            color: var(--accent-color);
+        }}
+
+        /* Badges */
+        .badge {{
+            border-radius: 12px;
+            font-weight: 500;
+            padding: 4px 8px;
+        }}
+
+        /* Breadcrumbs */
+        .breadcrumb {{
+            background-color: transparent;
+            padding: 0;
+            margin-bottom: 20px;
+        }}
+
+        .breadcrumb-item a {{
+            color: var(--text-secondary);
+        }}
+
+        .breadcrumb-item.active {{
+            color: var(--text-primary);
+            font-weight: 500;
+        }}
+
+        /* Flash messages */
+        #flash-messages {{
+            position: fixed;
+            top: 70px;
+            right: 20px;
+            z-index: 1000;
+            max-width: 400px;
+        }}
+
+        .flash-message {{
+            margin-bottom: 10px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+        }}
+
+        .flash-success {{
+            background-color: rgba(0, 186, 124, 0.1);
+            color: var(--success-color);
+            border: 1px solid rgba(0, 186, 124, 0.2);
+        }}
+
+        .flash-error {{
+            background-color: rgba(244, 33, 46, 0.1);
+            color: var(--error-color);
+            border: 1px solid rgba(244, 33, 46, 0.2);
+        }}
+
+        .flash-info {{
+            background-color: rgba(247, 181, 41, 0.1);
+            color: var(--warning-color);
+            border: 1px solid rgba(247, 181, 41, 0.2);
+        }}
+
+        /* Avatar styling */
+        .avatar {{
+            border-radius: 50%;
+            object-fit: cover;
+        }}
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {{
+            .navbar-brand {{
+                font-size: 16px;
+                padding: 16px 15px;
+            }}
+
+            .nav-link {{
+                padding: 16px 12px;
+                font-size: 14px;
+            }}
+
+            .theme-toggle {{
+                padding: 16px 15px;
+            }}
+
+            .card {{
+                border-radius: 12px;
+            }}
+
+            .card-header {{
+                border-radius: 12px 12px 0 0 !important;
+            }}
+        }}
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {{
+            width: 8px;
+        }}
+
+        ::-webkit-scrollbar-track {{
+            background: var(--bg-secondary);
+        }}
+
+        ::-webkit-scrollbar-thumb {{
+            background: var(--border-color);
+            border-radius: 4px;
+        }}
+
+        ::-webkit-scrollbar-thumb:hover {{
+            background: var(--border-hover);
+        }}
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+    <nav class="navbar navbar-expand-lg">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-layer-group me-2"></i>
+                MLTF Datatracker
+            </a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
-                <a class="nav-link" href="/submit/">Submit Draft</a>
+                <a class="nav-link" href="/">
+                    <i class="fas fa-home me-1"></i>Home
+                </a>
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a>
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
             </div>
             <div class="navbar-nav ms-auto">
                 {user_menu}
+                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                    <i class="fas fa-moon"></i>
+                </button>
             </div>
         </div>
     </nav>
+
     <div id="flash-messages"></div>
     {content}
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
 </body>
 </html>
 """
@@ -536,7 +929,7 @@ SUBMIT_TEMPLATE = """
     </nav>
     
     <h1>Submit Internet-Draft</h1>
-    <p class="lead">Submit a new Internet-Draft to the IETF datatracker</p>
+    <p class="lead">Submit a new Meta-Layer Draft to the MLTF datatracker</p>
     
     <div class="row">
         <div class="col-md-8">
@@ -589,7 +982,7 @@ SUBMIT_TEMPLATE = """
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="terms" required>
                                 <label class="form-check-label" for="terms">
-                                    I agree to the <a href="#" target="_blank">IETF submission terms</a>
+                                    I agree to the <a href="#" target="_blank">MLTF submission terms</a>
                                 </label>
                             </div>
                         </div>
@@ -613,15 +1006,15 @@ SUBMIT_TEMPLATE = """
                     <ul class="small">
                         <li>PDF format preferred</li>
                         <li>Maximum 16MB file size</li>
-                        <li>Use standard IETF formatting</li>
+                        <li>Use standard MLTF formatting</li>
                     </ul>
-                    
+
                     <h6>Content Requirements:</h6>
                     <ul class="small">
                         <li>Clear, descriptive title</li>
                         <li>Complete author information</li>
                         <li>Abstract describing the work</li>
-                        <li>Proper IETF document structure</li>
+                        <li>Proper MLTF document structure</li>
                     </ul>
                     
                     <h6>Review Process:</h6>
@@ -811,8 +1204,8 @@ SUBMISSION_STATUS_TEMPLATE = """
                     <p class="small">If you have questions about your submission:</p>
                     <ul class="small">
                         <li>Check the <a href="#" target="_blank">submission guidelines</a></li>
-                        <li>Contact the <a href="mailto:ietf-draft@ietf.org">IETF Secretariat</a></li>
-                        <li>Join the <a href="#" target="_blank">IETF discussion list</a></li>
+                        <li>Contact the <a href="mailto:draft@metalayer.org">MLTF Secretariat</a></li>
+                        <li>Join the <a href="#" target="_blank">MLTF discussion list</a></li>
                     </ul>
                 </div>
             </div>
@@ -1021,7 +1414,7 @@ def login():
         <a class="nav-link" href="/register/">Register</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Login - IETF Datatracker", user_menu=user_menu, content=LOGIN_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Login - MLTF Datatracker", user_menu=user_menu, content=LOGIN_TEMPLATE))
 
 @app.route('/logout/')
 def logout():
@@ -1059,7 +1452,7 @@ def register():
         <a class="nav-link" href="/login/">Sign In</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Register - IETF Datatracker", user_menu=user_menu, content=REGISTER_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF Datatracker", user_menu=user_menu, content=REGISTER_TEMPLATE))
 
 @app.route('/profile/', methods=['GET', 'POST'])
 @require_auth
@@ -1110,7 +1503,7 @@ def profile():
         current_user_email=current_user['email'],
         session_user=session['user']
     )
-    return render_template_string(BASE_TEMPLATE.format(title="Profile - IETF Datatracker", user_menu=user_menu, content=profile_content))
+    return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF Datatracker", user_menu=user_menu, content=profile_content))
 
 # Routes
 @app.route('/')
@@ -1145,7 +1538,7 @@ def home():
         </div>
         """
     
-    return BASE_TEMPLATE.format(title="IETF Datatracker", user_menu=user_menu, content=f"""
+    return BASE_TEMPLATE.format(title="MLTF Datatracker", user_menu=user_menu, content=f"""
     
     <div class="container mt-4">
         <div class="row">
@@ -1278,7 +1671,7 @@ def all_documents():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1329,7 +1722,7 @@ def draft_detail(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1460,7 +1853,7 @@ def groups():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1595,7 +1988,7 @@ def draft_comments(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1763,7 +2156,7 @@ def draft_history(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1877,7 +2270,7 @@ def draft_revisions(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1964,7 +2357,7 @@ def meetings():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -2023,7 +2416,7 @@ def people():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF Datatracker</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
