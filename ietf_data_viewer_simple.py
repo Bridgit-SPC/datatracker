@@ -1594,6 +1594,7 @@ def profile():
             theme = request.form.get('theme', 'light').strip()
             if theme in ['light', 'dark', 'auto']:
                 USERS[session['user']]['theme'] = theme
+                session['theme'] = theme  # Update session immediately
                 flash('Theme preference updated successfully!', 'success')
             else:
                 flash('Invalid theme selection.', 'error')
@@ -1655,7 +1656,7 @@ def home():
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <h1>MLTF Datatracker</h1>
+                <h1>MLTF</h1>
                 <p class="lead">The day-to-day front-end to the MLTF database for people who work on Meta-Layer standards.</p>
                 
                 <div class="row">
@@ -2662,6 +2663,599 @@ def draft_revisions(draft_name):
         </div>
     </div>
     
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme switching functionality
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+        const icon = themeToggle.querySelector('i');
+
+        // Load saved theme - prefer user preference over localStorage
+        const userTheme = '{{ session.get("theme", "light") }}';
+        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        function updateThemeIcon(theme) {{
+            if (theme === 'dark') {{
+                icon.className = 'fas fa-sun';
+                themeToggle.title = 'Switch to light mode';
+            }} else {{
+                icon.className = 'fas fa-moon';
+                themeToggle.title = 'Switch to dark mode';
+            }}
+        }}
+
+        themeToggle.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }});
+
+        // Flash message auto-hide
+        setTimeout(() => {{
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(msg => {{
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }});
+        }}, 5000);
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/group/<acronym>/')
+def group_detail(acronym):
+    """Display individual working group details"""
+    # Find the group
+    group = None
+    for g in GROUPS:
+        if g['acronym'] == acronym:
+            group = g
+            break
+
+    if not group:
+        return "Working group not found", 404
+
+    user_menu = generate_user_menu()
+    current_user = get_current_user()
+
+    # Check if user is already a member (for demo purposes, we'll just show a join button)
+    is_member = False  # In a real app, this would check a membership table
+
+    join_button = ""
+    if current_user and not is_member:
+        join_button = '<button class="btn btn-primary">Join Working Group</button>'
+    elif current_user and is_member:
+        join_button = '<span class="badge bg-success">Member</span>'
+
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{group['name']} - MLTF</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {{
+            /* Light theme (default) */
+            --bg-color: #ffffff;
+            --bg-secondary: #f7f9fa;
+            --bg-tertiary: #e1e8ed;
+            --text-primary: #14171a;
+            --text-secondary: #657786;
+            --text-muted: #aab8c2;
+            --border-color: #e1e8ed;
+            --border-hover: #ccd6dd;
+            --accent-color: #1d9bf0;
+            --accent-hover: #1a8cd8;
+            --success-color: #00ba7c;
+            --warning-color: #f7b529;
+            --error-color: #f4212e;
+            --navbar-bg: #ffffff;
+            --navbar-text: #14171a;
+            --navbar-border: #e1e8ed;
+            --card-bg: #ffffff;
+            --card-border: #e1e8ed;
+            --input-bg: #ffffff;
+            --input-border: #657786;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.15);
+        }}
+
+        [data-theme="dark"] {{
+            /* Dark theme */
+            --bg-color: #000000;
+            --bg-secondary: #16181c;
+            --bg-tertiary: #1d1f23;
+            --text-primary: #ffffff;
+            --text-secondary: #8b98a5;
+            --text-muted: #6c7b8a;
+            --border-color: #2f3336;
+            --border-hover: #3d4043;
+            --accent-color: #1d9bf0;
+            --accent-hover: #1a8cd8;
+            --success-color: #00ba7c;
+            --warning-color: #f7b529;
+            --error-color: #f4212e;
+            --navbar-bg: #16181c;
+            --navbar-text: #ffffff;
+            --navbar-border: #2f3336;
+            --card-bg: #16181c;
+            --card-border: #2f3336;
+            --input-bg: #16181c;
+            --input-border: #3d4043;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.4);
+        }}
+
+        * {{
+            box-sizing: border-box;
+        }}
+
+        body {{
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.5;
+            margin: 0;
+            min-height: 100vh;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }}
+
+        /* Modern navbar similar to X */
+        .navbar {{
+            background-color: var(--navbar-bg) !important;
+            border-bottom: 1px solid var(--navbar-border);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            box-shadow: var(--shadow);
+            padding: 0;
+            height: 53px;
+        }}
+
+        .navbar-brand {{
+            color: var(--navbar-text) !important;
+            font-weight: 700;
+            font-size: 18px;
+            padding: 16px 20px;
+            margin: 0;
+        }}
+
+        .navbar-brand:hover {{
+            color: var(--accent-color) !important;
+        }}
+
+        .navbar-nav {{
+            align-items: center;
+        }}
+
+        .nav-link {{
+            color: var(--text-secondary) !important;
+            font-weight: 500;
+            padding: 16px 20px;
+            margin: 0;
+            border-radius: 0;
+            transition: all 0.2s ease;
+        }}
+
+        .nav-link:hover {{
+            background-color: var(--bg-secondary);
+            color: var(--accent-color) !important;
+        }}
+
+        .nav-link.active {{
+            color: var(--accent-color) !important;
+            border-bottom: 3px solid var(--accent-color);
+            background-color: transparent;
+        }}
+
+        /* Theme toggle button */
+        .theme-toggle {{
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 18px;
+            padding: 16px 20px;
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }}
+
+        .theme-toggle:hover {{
+            color: var(--accent-color);
+        }}
+
+        /* Cards with modern styling */
+        .card {{
+            background-color: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            transition: all 0.2s ease;
+        }}
+
+        .card:hover {{
+            box-shadow: var(--shadow-hover);
+            border-color: var(--border-hover);
+        }}
+
+        .card-header {{
+            background-color: transparent;
+            border-bottom: 1px solid var(--card-border);
+            border-radius: 16px 16px 0 0 !important;
+            padding: 16px 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }}
+
+        .card-body {{
+            padding: 20px;
+        }}
+
+        /* Buttons styled like X */
+        .btn {{
+            border-radius: 20px;
+            font-weight: 700;
+            padding: 8px 16px;
+            transition: all 0.2s ease;
+        }}
+
+        .btn-primary {{
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
+        }}
+
+        .btn-primary:hover {{
+            background-color: var(--accent-hover);
+            border-color: var(--accent-hover);
+            transform: translateY(-1px);
+        }}
+
+        .btn-outline-primary {{
+            border-color: var(--text-secondary);
+            color: var(--text-primary);
+        }}
+
+        .btn-outline-primary:hover {{
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
+        }}
+
+        .btn-outline-secondary {{
+            border-color: var(--border-color);
+            color: var(--text-secondary);
+        }}
+
+        .btn-outline-secondary:hover {{
+            background-color: var(--bg-secondary);
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+        }}
+
+        /* Form inputs */
+        .form-control {{
+            background-color: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            padding: 12px 16px;
+            transition: all 0.2s ease;
+        }}
+
+        .form-control:focus {{
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
+            background-color: var(--input-bg);
+        }}
+
+        .form-control::placeholder {{
+            color: var(--text-muted);
+        }}
+
+        /* Alerts */
+        .alert {{
+            border-radius: 12px;
+            border: none;
+            padding: 16px 20px;
+        }}
+
+        .alert-info {{
+            background-color: rgba(29, 155, 240, 0.1);
+            color: var(--accent-color);
+        }}
+
+        /* Badges */
+        .badge {{
+            border-radius: 12px;
+            font-weight: 500;
+            padding: 4px 8px;
+        }}
+
+        /* Breadcrumbs */
+        .breadcrumb {{
+            background-color: transparent;
+            padding: 0;
+            margin-bottom: 20px;
+        }}
+
+        .breadcrumb-item a {{
+            color: var(--text-secondary);
+        }}
+
+        .breadcrumb-item.active {{
+            color: var(--text-primary);
+            font-weight: 500;
+        }}
+
+        /* Flash messages */
+        #flash-messages {{
+            position: fixed;
+            top: 70px;
+            right: 20px;
+            z-index: 1000;
+            max-width: 400px;
+        }}
+
+        .flash-message {{
+            margin-bottom: 10px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+        }}
+
+        .flash-success {{
+            background-color: rgba(0, 186, 124, 0.1);
+            color: var(--success-color);
+            border: 1px solid rgba(0, 186, 124, 0.2);
+        }}
+
+        .flash-error {{
+            background-color: rgba(244, 33, 46, 0.1);
+            color: var(--error-color);
+            border: 1px solid rgba(244, 33, 46, 0.2);
+        }}
+
+        .flash-info {{
+            background-color: rgba(247, 181, 41, 0.1);
+            color: var(--warning-color);
+            border: 1px solid rgba(247, 181, 41, 0.2);
+        }}
+
+        /* Avatar styling */
+        .avatar {{
+            border-radius: 50%;
+            object-fit: cover;
+        }}
+
+        /* X-inspired content width limitation - 8 inches at 96 DPI */
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            padding-left: 24px;
+            padding-right: 24px;
+        }}
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {{
+            .navbar-brand {{
+                font-size: 16px;
+                padding: 16px 15px;
+            }}
+
+            .nav-link {{
+                padding: 16px 12px;
+                font-size: 14px;
+            }}
+
+            .theme-toggle {{
+                padding: 16px 15px;
+            }}
+
+            .card {{
+                border-radius: 12px;
+            }}
+
+            .card-header {{
+                border-radius: 12px 12px 0 0 !important;
+            }}
+
+            .container {{
+                padding-left: 15px;
+                padding-right: 15px;
+            }}
+        }}
+
+        @media (min-width: 1200px) {{
+            .container {{
+                padding-left: 40px;
+                padding-right: 40px;
+            }}
+        }}
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {{
+            width: 8px;
+        }}
+
+        ::-webkit-scrollbar-track {{
+            background: var(--bg-secondary);
+        }}
+
+        ::-webkit-scrollbar-thumb {{
+            background: var(--border-color);
+            border-radius: 4px;
+        }}
+
+        ::-webkit-scrollbar-thumb:hover {{
+            background: var(--border-hover);
+        }}
+
+        /* Dropdown menu z-index fix */
+        .dropdown-menu {{
+            z-index: 1100;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            background-color: var(--card-bg);
+            margin-top: 8px;
+        }}
+
+        .dropdown-item {{
+            color: var(--text-primary);
+            padding: 12px 16px;
+            transition: background-color 0.2s ease;
+        }}
+
+        .dropdown-item:hover {{
+            background-color: var(--bg-secondary);
+            color: var(--accent-color);
+        }}
+
+        .dropdown-toggle {{
+            border: none;
+            background: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            padding: 16px 12px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }}
+
+        .dropdown-toggle:hover {{
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+        }}
+
+        .dropdown-toggle:focus {{
+            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
+        }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-layer-group me-2"></i>
+                MLTF
+            </a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/doc/all/">
+                    <i class="fas fa-file-alt me-1"></i>Documents
+                </a>
+                <a class="nav-link active" href="/group/">
+                    <i class="fas fa-users me-1"></i>Working Groups
+                </a>
+                <!-- <a class="nav-link" href="/meeting/">
+                    <i class="fas fa-calendar me-1"></i>Meetings
+                </a>
+                <a class="nav-link" href="/person/">
+                    <i class="fas fa-user-friends me-1"></i>People
+                </a> -->
+                <a class="nav-link" href="/submit/">
+                    <i class="fas fa-plus me-1"></i>Submit Draft
+                </a>
+            </div>
+            <div class="navbar-nav ms-auto">
+                {user_menu}
+                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                    <i class="fas fa-moon"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div id="flash-messages"></div>
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
+                <li class="breadcrumb-item"><a href="/group/">Working Groups</a></li>
+                <li class="breadcrumb-item active">{group['acronym']}</li>
+            </ol>
+        </nav>
+
+        <div class="row">
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header">
+                        <h1 class="h3 mb-0">{group['name']}</h1>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <span class="badge bg-primary me-2">{group['type']}</span>
+                            <span class="badge bg-success">{group['state']}</span>
+                        </div>
+
+                        <p class="lead">{group['description']}</p>
+
+                        <div class="row mt-4">
+                            <div class="col-md-6">
+                                <h5>Leadership</h5>
+                                <ul class="list-unstyled">
+                                    {"".join(f"<li><strong>Chair:</strong> {chair}</li>" for chair in group['chairs'])}
+                                </ul>
+                            </div>
+                            <div class="col-md-6">
+                                <h5>Membership</h5>
+                                <p>Anyone can join this working group to contribute to the development of {group['name'].lower()}.</p>
+                                {join_button}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sample content for the working group -->
+                <div class="card mt-4">
+                    <div class="card-header">
+                        <h5>Current Activities</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>This working group is actively developing standards and best practices for {group['name'].lower()}.</p>
+                        <ul>
+                            <li>Requirements gathering and analysis</li>
+                            <li>Technical specification development</li>
+                            <li>Implementation guidelines</li>
+                            <li>Community feedback integration</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Quick Info</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Acronym:</strong> {group['acronym']}</p>
+                        <p><strong>Type:</strong> {group['type']}</p>
+                        <p><strong>Status:</strong> {group['state']}</p>
+                        <p><strong>Chairs:</strong> {', '.join(group['chairs'])}</p>
+                    </div>
+                </div>
+
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5>Get Involved</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>Join our mailing list to stay updated on working group activities and contribute to discussions.</p>
+                        <button class="btn btn-outline-primary btn-sm">Subscribe to Mailing List</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // Theme switching functionality
