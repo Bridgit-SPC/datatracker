@@ -834,6 +834,46 @@ BASE_TEMPLATE = """
         ::-webkit-scrollbar-thumb:hover {{
             background: var(--border-hover);
         }}
+
+        /* Dropdown menu z-index fix */
+        .dropdown-menu {{
+            z-index: 1050;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            background-color: var(--card-bg);
+            margin-top: 8px;
+        }}
+
+        .dropdown-item {{
+            color: var(--text-primary);
+            padding: 12px 16px;
+            transition: background-color 0.2s ease;
+        }}
+
+        .dropdown-item:hover {{
+            background-color: var(--bg-secondary);
+            color: var(--accent-color);
+        }}
+
+        .dropdown-toggle {{
+            border: none;
+            background: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            padding: 16px 12px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }}
+
+        .dropdown-toggle:hover {{
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+        }}
+
+        .dropdown-toggle:focus {{
+            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
+        }}
     </style>
 </head>
 <body>
