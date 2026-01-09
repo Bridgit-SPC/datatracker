@@ -792,12 +792,12 @@ BASE_TEMPLATE = """
             object-fit: cover;
         }}
 
-        /* X-inspired content width limitation - 8 inches at 96 DPI */
+        /* Wider content layout for better readability */
         .container {{
-            max-width: 768px;
+            max-width: 1200px;
             margin: 0 auto;
-            padding-left: 20px;
-            padding-right: 20px;
+            padding-left: 24px;
+            padding-right: 24px;
         }}
 
         /* Responsive adjustments */
@@ -901,24 +901,21 @@ BASE_TEMPLATE = """
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-layer-group me-2"></i>
-                MLTF Datatracker
+                MLTF
             </a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">
-                    <i class="fas fa-home me-1"></i>Home
-                </a>
                 <a class="nav-link" href="/doc/all/">
                     <i class="fas fa-file-alt me-1"></i>Documents
                 </a>
                 <a class="nav-link" href="/group/">
                     <i class="fas fa-users me-1"></i>Working Groups
                 </a>
-                <a class="nav-link" href="/meeting/">
+                <!-- <a class="nav-link" href="/meeting/">
                     <i class="fas fa-calendar me-1"></i>Meetings
                 </a>
                 <a class="nav-link" href="/person/">
                     <i class="fas fa-user-friends me-1"></i>People
-                </a>
+                </a> -->
                 <a class="nav-link" href="/submit/">
                     <i class="fas fa-plus me-1"></i>Submit Draft
                 </a>
@@ -1495,7 +1492,7 @@ def login():
         <a class="nav-link" href="/register/">Register</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Login - MLTF Datatracker", user_menu=user_menu, content=LOGIN_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Login - MLTF", user_menu=user_menu, content=LOGIN_TEMPLATE))
 
 @app.route('/logout/')
 def logout():
@@ -1533,7 +1530,7 @@ def register():
         <a class="nav-link" href="/login/">Sign In</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF Datatracker", user_menu=user_menu, content=REGISTER_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF", user_menu=user_menu, content=REGISTER_TEMPLATE))
 
 @app.route('/profile/', methods=['GET', 'POST'])
 @require_auth
@@ -1601,7 +1598,7 @@ def profile():
         auto_selected=auto_selected,
         session_user=session['user']
     )
-    return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF Datatracker", user_menu=user_menu, content=profile_content))
+    return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF", user_menu=user_menu, content=profile_content))
 
 # Routes
 @app.route('/')
@@ -1617,7 +1614,7 @@ def home():
         user_menu = f"""
         <div class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                {current_user['name']} {f'({user_role})' if user_role != 'user' else ''}
+                {current_user['name']}
             </a>
             <ul class="dropdown-menu">
                 {admin_link}
@@ -1636,7 +1633,7 @@ def home():
         </div>
         """
     
-    return BASE_TEMPLATE.format(title="MLTF Datatracker", user_menu=user_menu, content=f"""
+    return BASE_TEMPLATE.format(title="MLTF", user_menu=user_menu, content=f"""
     
     <div class="container mt-4">
         <div class="row">
@@ -1769,7 +1766,7 @@ def all_documents():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1820,7 +1817,7 @@ def draft_detail(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -1951,7 +1948,7 @@ def groups():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -2086,7 +2083,7 @@ def draft_comments(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -2254,7 +2251,7 @@ def draft_history(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -2368,7 +2365,7 @@ def draft_revisions(draft_name):
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -2455,7 +2452,7 @@ def meetings():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
@@ -2514,7 +2511,7 @@ def people():
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">MLTF Datatracker</a>
+            <a class="navbar-brand" href="/">MLTF</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/">Home</a>
                 <a class="nav-link" href="/doc/all/">All Documents</a>
