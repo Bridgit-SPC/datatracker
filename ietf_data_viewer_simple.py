@@ -3124,6 +3124,189 @@ def draft_detail(draft_name):
 
     return BASE_TEMPLATE.format(title=f"{draft['name']} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
+@app.route('/doc/draft/<draft_name>/comments/')
+def draft_comments(draft_name):
+    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    if not draft:
+        return "Document not found", 404
+
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'dark')
+
+    # Get comments for this draft
+    comments = Comment.query.filter_by(draft_name=draft_name).order_by(Comment.timestamp.desc()).all()
+
+    comments_html = ""
+    if comments:
+        for comment in comments:
+            comments_html += f"""
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <strong>{comment.author}</strong>
+                        <small class="text-muted">{comment.timestamp.strftime('%Y-%m-%d %H:%M')}</small>
+                    </div>
+                    <p class="mb-0">{comment.text}</p>
+                </div>
+            </div>
+            """
+    else:
+        comments_html = """
+        <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            No comments yet for this draft.
+        </div>
+        """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
+                <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
+                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
+                <li class="breadcrumb-item active">Comments</li>
+            </ol>
+        </nav>
+
+        <h1>Comments for {draft_name}</h1>
+        <p class="lead">{draft['title']}</p>
+
+        <div class="mb-4">
+            <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
+                <i class="fas fa-arrow-left me-1"></i>Back to Draft
+            </a>
+            <a href="/doc/draft/{draft_name}/history/" class="btn btn-outline-secondary me-2">History</a>
+            <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
+        </div>
+
+        {comments_html}
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(title=f"Comments - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
+
+@app.route('/doc/draft/<draft_name>/history/')
+def draft_history(draft_name):
+    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    if not draft:
+        return "Document not found", 404
+
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'dark')
+
+    # Get history for this draft
+    history = DocumentHistory.query.filter_by(draft_name=draft_name).order_by(DocumentHistory.timestamp.desc()).all()
+
+    history_html = ""
+    if history:
+        for entry in history:
+            history_html += f"""
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <span class="badge bg-primary">{entry.action}</span>
+                        <small class="text-muted">{entry.timestamp.strftime('%Y-%m-%d %H:%M')}</small>
+                    </div>
+                    <p class="mb-1"><strong>User:</strong> {entry.user}</p>
+                    <p class="mb-0">{entry.details}</p>
+                </div>
+            </div>
+            """
+    else:
+        history_html = """
+        <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            No history available for this draft.
+        </div>
+        """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
+                <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
+                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
+                <li class="breadcrumb-item active">History</li>
+            </ol>
+        </nav>
+
+        <h1>History for {draft_name}</h1>
+        <p class="lead">{draft['title']}</p>
+
+        <div class="mb-4">
+            <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
+                <i class="fas fa-arrow-left me-1"></i>Back to Draft
+            </a>
+            <a href="/doc/draft/{draft_name}/comments/" class="btn btn-outline-secondary me-2">Comments</a>
+            <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
+        </div>
+
+        {history_html}
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(title=f"History - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
+
+@app.route('/doc/draft/<draft_name>/revisions/')
+def draft_revisions(draft_name):
+    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    if not draft:
+        return "Document not found", 404
+
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'dark')
+
+    # For now, show a simple revision history
+    # In a real system, this would show actual revision differences
+    revisions_html = f"""
+    <div class="card">
+        <div class="card-header">
+            <h5>Current Revision: {draft['rev']}</h5>
+        </div>
+        <div class="card-body">
+            <p>This draft is currently at revision {draft['rev']}.</p>
+            <p><strong>Published:</strong> {draft['date']}</p>
+            <p><strong>Pages:</strong> {draft['pages']}</p>
+            <p><strong>Words:</strong> {draft['words']}</p>
+        </div>
+    </div>
+
+    <div class="alert alert-info mt-3">
+        <i class="fas fa-info-circle me-2"></i>
+        Detailed revision history and diff viewing would be implemented in a full datatracker system.
+    </div>
+    """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
+                <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
+                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
+                <li class="breadcrumb-item active">Revisions</li>
+            </ol>
+        </nav>
+
+        <h1>Revisions for {draft_name}</h1>
+        <p class="lead">{draft['title']}</p>
+
+        <div class="mb-4">
+            <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
+                <i class="fas fa-arrow-left me-1"></i>Back to Draft
+            </a>
+            <a href="/doc/draft/{draft_name}/comments/" class="btn btn-outline-secondary me-2">Comments</a>
+            <a href="/doc/draft/{draft_name}/history/" class="btn btn-outline-secondary">History</a>
+        </div>
+
+        {revisions_html}
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(title=f"Revisions - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
+
 @app.route('/group/')
 def groups():
     user_menu = generate_user_menu()
