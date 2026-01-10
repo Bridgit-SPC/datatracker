@@ -1736,6 +1736,26 @@ def submission_detail(submission_id):
         initial_review_replacement = r'''\2'''
         content = re.sub(initial_review_pattern, initial_review_replacement, content, flags=re.DOTALL)
 
+    # Handle nested conditionals in timeline BEFORE placeholder replacements
+    if submission.approved_at:
+        content = content.replace('{% if submission.approved_at %}', '')
+        content = content.replace('- {{ submission.approved_at }}', f'- {submission.approved_at.strftime("%Y-%m-%d %H:%M:%S")}')
+        content = content.replace('{% elif submission.rejected_at %}', '')
+        content = content.replace('- {{ submission.rejected_at }}', '')
+        content = content.replace('{% endif %}', '')
+    elif submission.rejected_at:
+        content = content.replace('{% if submission.approved_at %}', '')
+        content = content.replace('- {{ submission.approved_at }}', '')
+        content = content.replace('{% elif submission.rejected_at %}', '')
+        content = content.replace('- {{ submission.rejected_at }}', f'- {submission.rejected_at.strftime("%Y-%m-%d %H:%M:%S")}')
+        content = content.replace('{% endif %}', '')
+    else:
+        content = content.replace('{% if submission.approved_at %}', '')
+        content = content.replace('- {{ submission.approved_at }}', '')
+        content = content.replace('{% elif submission.rejected_at %}', '')
+        content = content.replace('- {{ submission.rejected_at }}', '')
+        content = content.replace('{% endif %}', '')
+
     if submission.status == 'approved':
         # Show published timeline item, hide pending items
         published_pattern = r'{% if submission\.status == \'approved\' %}(.*?){% else %}(.*?){% endif %}'
@@ -1773,23 +1793,6 @@ def submission_detail(submission_id):
     ).replace(
         '{{ \'Completed\' if submission.status == \'approved\' else \'Rejected\' }}', 'Completed' if submission.status == 'approved' else 'Rejected'
     )
-
-    # Handle nested conditionals in timeline
-    if submission.approved_at:
-        content = content.replace(
-            '{% if submission.approved_at %}\n                                    - {{ submission.approved_at }}\n                                    {% elif submission.rejected_at %}\n                                    - {{ submission.rejected_at }}\n                                    {% endif %}',
-            f'- {submission.approved_at.strftime("%Y-%m-%d %H:%M:%S")}'
-        )
-    elif submission.rejected_at:
-        content = content.replace(
-            '{% if submission.approved_at %}\n                                    - {{ submission.approved_at }}\n                                    {% elif submission.rejected_at %}\n                                    - {{ submission.rejected_at }}\n                                    {% endif %}',
-            f'- {submission.rejected_at.strftime("%Y-%m-%d %H:%M:%S")}'
-        )
-    else:
-        content = content.replace(
-            '{% if submission.approved_at %}\n                                    - {{ submission.approved_at }}\n                                    {% elif submission.rejected_at %}\n                                    - {{ submission.rejected_at }}\n                                    {% endif %}',
-            ''
-        )
 
 
     return BASE_TEMPLATE.format(title=f"Submission {submission.id} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
