@@ -1607,13 +1607,29 @@ def submission_detail(submission_id):
     # Try to read file content for preview
     file_content = "File preview not available"
     if submission.file_path and os.path.exists(submission.file_path):
-        try:
-            with open(submission.file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                # Limit preview to first 2000 characters
-                file_content = content[:2000] + ("..." if len(content) > 2000 else "")
-        except Exception as e:
-            file_content = f"Error reading file: {str(e)}"
+        # Get file extension to determine how to handle preview
+        _, ext = os.path.splitext(submission.filename.lower())
+
+        if ext in ['.txt', '.xml']:
+            # Text-based files can be previewed
+            try:
+                with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                    # Limit preview to first 2000 characters
+                    if len(content) > 2000:
+                        file_content = content[:2000] + "..."
+                    else:
+                        file_content = content
+            except Exception as e:
+                file_content = f"Error reading text file: {str(e)}"
+        elif ext in ['.pdf', '.doc', '.docx']:
+            # Binary files - show file type info instead of content
+            file_size = os.path.getsize(submission.file_path)
+            file_size_kb = file_size / 1024
+            file_content = f"Binary file ({ext[1:].upper()}) - {file_size_kb:.1f} KB\\nPreview not available for binary files."
+        else:
+            # Unknown file type
+            file_content = f"Unsupported file type: {ext}\\nPreview not available."
 
     # Start with template and do all replacements
     content = SUBMISSION_STATUS_TEMPLATE
