@@ -1369,8 +1369,8 @@ SUBMISSION_STATUS_TEMPLATE = """
                     {% endif %}
 
                     <h6 class="mt-4">File Preview</h6>
-                    <div class="border rounded p-3 bg-light">
-                        <pre class="mb-0" style="font-size: 0.9em; max-height: 400px; overflow-y: auto;">{{ file_content }}</pre>
+                    <div class="border rounded p-3" style="background-color: var(--input-bg); border-color: var(--input-border);">
+                        <pre class="mb-0" style="font-size: 0.9em; max-height: 400px; overflow-y: auto; color: var(--text-primary);">{{ file_content }}</pre>
                     </div>
 
                     {% if submission.status == 'submitted' and (current_user and (current_user.role in ['admin', 'editor'] or current_user.name in ['admin', 'Admin User'])) %}
@@ -1384,12 +1384,6 @@ SUBMISSION_STATUS_TEMPLATE = """
                                 <button type="submit" class="btn btn-danger btn-sm">Reject</button>
                             </form>
                         </div>
-                    </div>
-                    {% endif %}
-                    {% if submission.abstract %}
-                    <div class="row mb-3">
-                        <div class="col-sm-3"><strong>Abstract:</strong></div>
-                        <div class="col-sm-9">{{ submission.abstract }}</div>
                     </div>
                     {% endif %}
                 </div>
@@ -1442,14 +1436,14 @@ SUBMISSION_STATUS_TEMPLATE = """
                         <div class="timeline-item">
                             <div class="timeline-marker bg-light"></div>
                             <div class="timeline-content">
-                                <h6>Working Group Review</h6>
+                                <h6>• Working Group Review</h6>
                                 <p class="text-muted small">Pending initial approval</p>
                             </div>
                         </div>
                         <div class="timeline-item">
                             <div class="timeline-marker bg-light"></div>
                             <div class="timeline-content">
-                                <h6>IESG Review</h6>
+                                <h6>• MLSG Review</h6>
                                 <p class="text-muted small">Pending working group review</p>
                             </div>
                         </div>
@@ -1621,13 +1615,54 @@ def submission_detail(submission_id):
         except Exception as e:
             file_content = f"Error reading file: {str(e)}"
 
-    # Render template with submission data
-    content = SUBMISSION_STATUS_TEMPLATE.replace(
+    # Start with template and do all replacements
+    content = SUBMISSION_STATUS_TEMPLATE
+
+    # First, handle abstract conditional
+    import re
+    if submission.abstract:
+        content = re.sub(
+            r'{% if submission\.abstract %}(.*?){% endif %}',
+            r'\1',
+            content,
+            flags=re.DOTALL
+        )
+    else:
+        content = re.sub(r'{% if submission\.abstract %}.*?{% endif %}', '', content, flags=re.DOTALL)
+
+    # Handle admin actions
+    if current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']):
+        content = content.replace(
+            '{% if submission.status == \'submitted\' and (current_user and (current_user.role in [\'admin\', \'editor\'] or current_user.name in [\'admin\', \'Admin User\'])) %}',
+            '<div class="row mb-3"><div class="col-sm-3"><strong>Actions:</strong></div><div class="col-sm-9">'
+        ).replace(
+            '{% endif %}',
+            '</div></div>'
+        )
+    else:
+        # Remove admin sections for regular users
+        content = re.sub(r'{% if submission\.status == \'submitted\' and .*?%}.*?{% endif %}', '', content, flags=re.DOTALL)
+
+    # Handle status conditionals
+    if submission.status in ['approved', 'rejected']:
+        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+    else:
+        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+
+    if submission.status == 'approved':
+        content = content.replace('{% if submission.status == \'approved\' %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+    else:
+        content = content.replace('{% if submission.status == \'approved\' %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+
+    # NOW do placeholder replacement after conditionals are processed
+    content = content.replace(
         '{{ submission.id }}', str(submission.id or '')
     ).replace(
         '{{ submission.status.title() }}', str(submission.status.title() or '')
     ).replace(
         '{{ submission.title }}', str(submission.title or '')
+    ).replace(
+        '{{ submission.abstract }}', str(submission.abstract or '')
     ).replace(
         '{{ submission.authors | join(\', \') }}', str(', '.join(submission.authors) or '')
     ).replace(
@@ -1643,28 +1678,6 @@ def submission_detail(submission_id):
     ).replace(
         '{{ submission.rejected_at }}', str(submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else '')
     )
-
-    # Add current user context for admin actions
-    if current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']):
-        content = content.replace(
-            '{% if submission.status == \'submitted\' and (current_user and (current_user.role in [\'admin\', \'editor\'] or current_user.name in [\'admin\', \'Admin User\'])) %}',
-            '<div class="row mb-3"><div class="col-sm-3"><strong>Actions:</strong></div><div class="col-sm-9">'
-        ).replace(
-            '{% endif %}',
-            '</div></div>'
-        ).replace(
-            '{{ submission.id }}', submission.id
-        )
-    else:
-        # Remove admin sections for regular users
-        import re
-        content = re.sub(r'{% if submission\.status == \'submitted\' and .*?%}.*?{% endif %}', '', content, flags=re.DOTALL)
-
-    # Handle conditional sections
-    if submission.abstract:
-        content = content.replace('{% if submission.abstract %}', '').replace('{% endif %}', '')
-    else:
-        content = re.sub(r'{% if submission\.abstract %}.*?{% endif %}', '', content, flags=re.DOTALL)
 
     if submission.status in ['approved', 'rejected']:
         content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
