@@ -1770,17 +1770,27 @@ def submission_detail(submission_id):
         '{{ submission.approved_at }}', str(submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else '')
     ).replace(
         '{{ submission.rejected_at }}', str(submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else '')
+    ).replace(
+        '{{ \'Completed\' if submission.status == \'approved\' else \'Rejected\' }}', 'Completed' if submission.status == 'approved' else 'Rejected'
     )
 
-    if submission.status in ['approved', 'rejected']:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+    # Handle nested conditionals in timeline
+    if submission.approved_at:
+        content = content.replace(
+            '{% if submission.approved_at %}\n                                    - {{ submission.approved_at }}\n                                    {% elif submission.rejected_at %}\n                                    - {{ submission.rejected_at }}\n                                    {% endif %}',
+            f'- {submission.approved_at.strftime("%Y-%m-%d %H:%M:%S")}'
+        )
+    elif submission.rejected_at:
+        content = content.replace(
+            '{% if submission.approved_at %}\n                                    - {{ submission.approved_at }}\n                                    {% elif submission.rejected_at %}\n                                    - {{ submission.rejected_at }}\n                                    {% endif %}',
+            f'- {submission.rejected_at.strftime("%Y-%m-%d %H:%M:%S")}'
+        )
     else:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+        content = content.replace(
+            '{% if submission.approved_at %}\n                                    - {{ submission.approved_at }}\n                                    {% elif submission.rejected_at %}\n                                    - {{ submission.rejected_at }}\n                                    {% endif %}',
+            ''
+        )
 
-    if submission.status == 'approved':
-        content = content.replace('{% if submission.status == \'approved\' %}', '').replace('{% else %}', '').replace('{% endif %}', '')
-    else:
-        content = content.replace('{% if submission.status == \'approved\' %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
 
     return BASE_TEMPLATE.format(title=f"Submission {submission.id} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
