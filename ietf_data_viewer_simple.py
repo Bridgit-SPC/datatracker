@@ -3338,6 +3338,7 @@ def draft_detail(draft_name):
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
 
     # If not found in DRAFTS, try to find as a submission ID
+    submission = None
     if not draft:
         from ietf_data_viewer_simple import Submission
         submission = Submission.query.filter_by(id=draft_name).first()
@@ -3359,7 +3360,100 @@ def draft_detail(draft_name):
 
     if not draft:
         return "Document not found", 404
-    
+
+    # Load full document content
+    document_content = "Document content not available."
+
+    # Try to get content from submission file first
+    if submission and submission.file_path and os.path.exists(submission.file_path):
+        _, ext = os.path.splitext(submission.filename.lower())
+        try:
+            if ext in ['.txt', '.xml']:
+                with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    document_content = f.read()
+            elif ext == '.docx':
+                from docx import Document
+                doc = Document(submission.file_path)
+                content_parts = []
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        content_parts.append(paragraph.text)
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                content_parts.append(cell.text)
+                document_content = '\n\n'.join(content_parts)
+            elif ext == '.pdf':
+                from PyPDF2 import PdfReader
+                reader = PdfReader(submission.file_path)
+                content_parts = []
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text.strip():
+                        content_parts.append(text)
+                document_content = '\n\n'.join(content_parts)
+                # Clean up PDF text
+                import re
+                document_content = re.sub(r'\n+', '\n', document_content)
+                document_content = re.sub(r' +', ' ', document_content)
+            else:
+                document_content = f"Document content cannot be displayed for {ext.upper()} files. Please download to view."
+        except Exception as e:
+            document_content = f"Error loading document content: {str(e)}"
+
+    # If no submission content, try to get from DRAFTS data
+    elif draft and 'name' in draft:
+        # For demo purposes, generate some sample content based on the draft
+        document_content = f"""INTERNET-DRAFT                                               {', '.join(draft.get('authors', []))}
+Intended status: Informational                            Meta-Layer Initiative
+Expires: {draft.get('date', 'TBD')}                                      {draft.get('date', 'TBD')}
+
+
+{draft.get('title', 'Document Title')}
+
+
+Abstract
+
+{draft.get('abstract', 'Abstract not available.')}
+
+
+1. Introduction
+
+This document describes {draft.get('title', 'the subject matter')}.
+
+The content of this draft is currently being developed and will be available
+in the full document once published.
+
+2. Status of This Memo
+
+This Internet-Draft is submitted in full conformance with the provisions
+of BCP 78 and BCP 79.
+
+Internet-Drafts are working documents of the Internet Engineering Task Force
+(IETF). Note that other groups may also distribute working documents as
+Internet-Drafts. The list of current Internet-Drafts is at
+https://datatracker.ietf.org/drafts/current/.
+
+Internet-Drafts are draft documents valid for a maximum of six months and
+may be updated, replaced, or obsoleted by other documents at any time. It is
+inappropriate to use Internet-Drafts as reference material or to cite them
+other than as "work in progress."
+
+This Internet-Draft will expire on {draft.get('date', 'TBD')}.
+
+
+3. References
+
+[IETF] IETF Datatracker, https://datatracker.ietf.org/
+
+Authors' Addresses
+
+{chr(10).join([f'{author} <email@example.com>' for author in draft.get('authors', [])])}
+
+Meta-Layer Initiative
+"""
+
     user_menu = generate_user_menu()
     current_theme = session.get('theme', 'dark')
     content = f"""
@@ -3394,6 +3488,26 @@ def draft_detail(draft_name):
                     </div>
                     <div class="card-body">
                         <p>{draft.get('abstract', 'Abstract not available for this draft.')}</p>
+                    </div>
+                </div>
+
+                <!-- Full Document Content -->
+                <div class="card mt-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Document Content</h5>
+                        <div>
+                            <a href="/download/{draft['name']}" class="btn btn-sm btn-outline-primary" target="_blank">
+                                <i class="fas fa-download me-1"></i>Download
+                            </a>
+                            <a href="/doc/draft/{draft['name']}.txt" class="btn btn-sm btn-outline-secondary" target="_blank">
+                                <i class="fas fa-external-link-alt me-1"></i>View TXT
+                            </a>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="document-content" style="font-family: 'Courier New', monospace; font-size: 0.9em; line-height: 1.4; white-space: pre-wrap; background-color: var(--input-bg); color: var(--text-primary); padding: 20px; border-radius: 8px; max-height: 800px; overflow-y: auto;">
+{document_content}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -3437,6 +3551,9 @@ def draft_detail(draft_name):
         </div>
     </div>
     """
+
+    # Add document_content to the template
+    content = content.replace('{document_content}', document_content)
 
     return BASE_TEMPLATE.format(title=f"{draft['name']} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
