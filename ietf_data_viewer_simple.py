@@ -1610,9 +1610,9 @@ def submission_detail(submission_id):
         # Get file extension to determine how to handle preview
         _, ext = os.path.splitext(submission.filename.lower())
 
-        if ext in ['.txt', '.xml']:
-            # Text-based files can be previewed
-            try:
+        try:
+            if ext in ['.txt', '.xml']:
+                # Text-based files can be previewed directly
                 with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
                     # Limit preview to first 2000 characters
@@ -1620,16 +1620,72 @@ def submission_detail(submission_id):
                         file_content = content[:2000] + "..."
                     else:
                         file_content = content
-            except Exception as e:
-                file_content = f"Error reading text file: {str(e)}"
-        elif ext in ['.pdf', '.doc', '.docx']:
-            # Binary files - show file type info instead of content
+
+            elif ext == '.docx':
+                # Extract text from DOCX files
+                from docx import Document
+                doc = Document(submission.file_path)
+                content = ""
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        content += paragraph.text + "\n"
+
+                # Also check tables for content
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                content += cell.text + "\n"
+
+                if content.strip():
+                    # Limit preview to first 2000 characters
+                    if len(content) > 2000:
+                        file_content = content[:2000] + "..."
+                    else:
+                        file_content = content
+                else:
+                    file_content = "DOCX file appears to be empty or contains no extractable text."
+
+            elif ext == '.pdf':
+                # Extract text from PDF files
+                from PyPDF2 import PdfReader
+                reader = PdfReader(submission.file_path)
+                content = ""
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text.strip():
+                        content += text + "\n"
+
+                if content.strip():
+                    # Clean up the text (remove excessive whitespace)
+                    import re
+                    content = re.sub(r'\n+', '\n', content)  # Remove multiple newlines
+                    content = re.sub(r' +', ' ', content)    # Remove multiple spaces
+
+                    # Limit preview to first 2000 characters
+                    if len(content) > 2000:
+                        file_content = content[:2000] + "..."
+                    else:
+                        file_content = content
+                else:
+                    file_content = "PDF file appears to be empty or contains no extractable text (may be image-based)."
+
+            elif ext == '.doc':
+                # Legacy DOC files - show file info
+                file_size = os.path.getsize(submission.file_path)
+                file_size_kb = file_size / 1024
+                file_content = f"Legacy DOC file ({file_size_kb:.1f} KB)\\nText extraction not supported for legacy .doc format.\\nPlease convert to .docx for text preview."
+
+            else:
+                # Unknown file type
+                file_size = os.path.getsize(submission.file_path)
+                file_size_kb = file_size / 1024
+                file_content = f"Unsupported file type: {ext} ({file_size_kb:.1f} KB)\\nPreview not available."
+
+        except Exception as e:
             file_size = os.path.getsize(submission.file_path)
             file_size_kb = file_size / 1024
-            file_content = f"Binary file ({ext[1:].upper()}) - {file_size_kb:.1f} KB\\nPreview not available for binary files."
-        else:
-            # Unknown file type
-            file_content = f"Unsupported file type: {ext}\\nPreview not available."
+            file_content = f"Error extracting text from {ext[1:].upper()} file ({file_size_kb:.1f} KB): {str(e)}"
 
     # Start with template and do all replacements
     content = SUBMISSION_STATUS_TEMPLATE
