@@ -787,12 +787,29 @@ BASE_TEMPLATE = """
 
         /* Form inputs */
         .form-control {{
-            background-color: var(--input-bg);
-            border: 1px solid var(--input-border);
+            background-color: var(--input-bg) !important;
+            border: 1px solid var(--input-border) !important;
             border-radius: 8px;
-            color: var(--text-primary);
+            color: var(--text-primary) !important;
             padding: 12px 16px;
             transition: all 0.2s ease;
+        }}
+
+        input.form-control, textarea.form-control, select.form-control {{
+            color: var(--text-primary) !important;
+            background-color: var(--input-bg) !important;
+            border-color: var(--input-border) !important;
+        }}
+
+        [data-theme="dark"] input,
+        [data-theme="dark"] textarea,
+        [data-theme="dark"] select,
+        [data-theme="dark"] input.form-control,
+        [data-theme="dark"] textarea.form-control,
+        [data-theme="dark"] select.form-control {{
+            color: #ffffff !important;
+            background-color: #16181c !important;
+            border-color: #3d4043 !important;
         }}
 
         .form-control:focus {{
@@ -803,6 +820,21 @@ BASE_TEMPLATE = """
 
         .form-control::placeholder {{
             color: var(--text-muted);
+        }}
+
+        .form-select {{
+            background-color: var(--input-bg) !important;
+            border: 1px solid var(--input-border) !important;
+            border-radius: 8px;
+            color: var(--text-primary) !important;
+            padding: 12px 16px;
+            transition: all 0.2s ease;
+        }}
+
+        [data-theme="dark"] .form-select {{
+            color: #ffffff !important;
+            background-color: #16181c !important;
+            border-color: #3d4043 !important;
         }}
 
         /* Alerts */
