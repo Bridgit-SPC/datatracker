@@ -3134,10 +3134,24 @@ def draft_detail(draft_name):
                         <h5>Actions</h5>
                     </div>
                     <div class="card-body">
-                        <a href="/doc/draft/{draft['name']}/comments/" class="btn btn-primary w-100 mb-2">View Comments</a>
+                        <a href="/doc/draft/{draft['name']}/comments/" class="btn btn-primary w-100 mb-2">View Comments ({Comment.query.filter_by(draft_name=draft_name).count()})</a>
                         <a href="/doc/draft/{draft['name']}/history/" class="btn btn-secondary w-100 mb-2">View History</a>
                         <a href="/doc/draft/{draft['name']}/revisions/" class="btn btn-info w-100 mb-2">View Revisions</a>
                         <a href="/doc/draft/{draft['name']}/" class="btn btn-outline-primary w-100">Download PDF</a>
+                    </div>
+                </div>
+
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5>Quick Comment</h5>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST" action="/doc/draft/{draft['name']}/comments/">
+                            <div class="mb-3">
+                                <textarea class="form-control" name="comment" rows="3" placeholder="Add a quick comment..." required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-success btn-sm w-100">Post Comment</button>
+                        </form>
                     </div>
                 </div>
 
@@ -3156,39 +3170,97 @@ def draft_detail(draft_name):
 
     return BASE_TEMPLATE.format(title=f"{draft['name']} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
-@app.route('/doc/draft/<draft_name>/comments/')
+@app.route('/doc/draft/<draft_name>/comments/', methods=['GET', 'POST'])
+@require_auth
 def draft_comments(draft_name):
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
     if not draft:
         return "Document not found", 404
 
     user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
+    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
+    current_user = get_current_user()
 
-    # Get comments for this draft
-    comments = Comment.query.filter_by(draft_name=draft_name).order_by(Comment.timestamp.desc()).all()
+    # Handle new comment submission
+    if request.method == 'POST':
+        action = request.form.get('action', 'comment')
 
-    comments_html = ""
-    if comments:
-        for comment in comments:
-            comments_html += f"""
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <strong>{comment.author}</strong>
-                        <small class="text-muted">{comment.timestamp.strftime('%Y-%m-%d %H:%M')}</small>
-                    </div>
-                    <p class="mb-0">{comment.text}</p>
-                </div>
-            </div>
-            """
-    else:
-        comments_html = """
-        <div class="alert alert-info">
-            <i class="fas fa-info-circle me-2"></i>
-            No comments yet for this draft.
-        </div>
-        """
+        if action == 'comment':
+            comment_text = request.form.get('comment', '').strip()
+            if comment_text:
+                # Create new comment in database
+                new_comment = Comment(
+                    draft_name=draft_name,
+                    text=comment_text,
+                    author=current_user['name']
+                )
+                db.session.add(new_comment)
+                db.session.commit()
+
+                # Add to document history
+                add_to_document_history(draft_name, 'Comment added', current_user['name'], f'Added comment: {comment_text[:50]}...')
+
+                flash('Comment added successfully!', 'success')
+                return redirect(f'/doc/draft/{draft_name}/comments/')
+            else:
+                flash('Please enter a comment.', 'error')
+
+        elif action == 'like':
+            comment_id = request.form.get('comment_id')
+            if comment_id:
+                liked = toggle_comment_like(draft_name, comment_id, current_user['name'])
+                action_text = 'liked' if liked else 'unliked'
+                flash(f'Comment {action_text}!', 'success')
+                return redirect(f'/doc/draft/{draft_name}/comments/')
+            else:
+                flash('Invalid comment ID.', 'error')
+
+        elif action == 'reply':
+            parent_comment_id = request.form.get('parent_comment_id')
+            reply_text = request.form.get('reply_text', '').strip()
+            if reply_text and parent_comment_id:
+                add_comment_reply(draft_name, parent_comment_id, reply_text, current_user)
+                flash('Reply added successfully!', 'success')
+                return redirect(f'/doc/draft/{draft_name}/comments/')
+            else:
+                flash('Please enter a reply.', 'error')
+
+    # Get comments for this draft and build comment tree
+    all_comments = build_comment_tree(draft_name)
+
+    # Always include sample comments (real IETF-style comments)
+    sample_comments = [
+        {
+            'id': 'sample_1',
+            'author': 'John Smith',
+            'date': '2024-01-15 14:30',
+            'comment': 'This is a great draft! I think the approach is solid and the implementation details are well thought out.',
+            'avatar': 'JS',
+            'replies': []
+        },
+        {
+            'id': 'sample_2',
+            'author': 'Alice Johnson',
+            'date': '2024-01-16 09:15',
+            'comment': 'I have some concerns about the security implications mentioned in section 3.2. Could we discuss this further?',
+            'avatar': 'AJ',
+            'replies': []
+        },
+        {
+            'id': 'sample_3',
+            'author': 'Bob Wilson',
+            'date': '2024-01-16 16:45',
+            'comment': 'The performance metrics look promising. Have you considered the impact on legacy systems?',
+            'avatar': 'BW',
+            'replies': []
+        }
+    ]
+
+    # Combine sample comments with user comments
+    all_comments = sample_comments + all_comments
+
+    # Render the comment tree with nested replies
+    comments_html = render_comment_tree(all_comments, draft_name)
 
     content = f"""
     <div class="container mt-4">
@@ -3212,8 +3284,80 @@ def draft_comments(draft_name):
             <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
         </div>
 
-        {comments_html}
+        <div class="row">
+            <div class="col-md-8">
+                <h3>Comments ({len(all_comments)})</h3>
+                <div id="flash-messages"></div>
+                {comments_html}
+
+                <div class="card mt-4">
+                    <div class="card-header">
+                        <h5>Add a Comment</h5>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST">
+                            <div class="mb-3">
+                                <label for="comment" class="form-label">Your Comment</label>
+                                <textarea class="form-control" id="comment" name="comment" rows="4" placeholder="Enter your comment here..." required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Submit Comment</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Document Info</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Title:</strong> {draft['title']}</p>
+                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
+                        <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
+                        <p><strong>Last Updated:</strong> {draft['date']}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
+
+    <script>
+        function toggleLike(commentId) {{
+            // Create a form to submit the like action
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.style.display = 'none';
+
+            const actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'action';
+            actionInput.value = 'like';
+
+            const commentIdInput = document.createElement('input');
+            commentIdInput.type = 'hidden';
+            commentIdInput.name = 'comment_id';
+            commentIdInput.value = commentId;
+
+            form.appendChild(actionInput);
+            form.appendChild(commentIdInput);
+            document.body.appendChild(form);
+            form.submit();
+        }}
+
+        function toggleReply(commentId) {{
+            // Find the reply form for this comment
+            const replyForm = document.getElementById('reply-form-' + commentId);
+            if (replyForm) {{
+                // Toggle visibility
+                if (replyForm.style.display === 'none' || replyForm.style.display === '') {{
+                    replyForm.style.display = 'block';
+                }} else {{
+                    replyForm.style.display = 'none';
+                }}
+            }}
+        }}
+    </script>
     """
 
     return BASE_TEMPLATE.format(title=f"Comments - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
