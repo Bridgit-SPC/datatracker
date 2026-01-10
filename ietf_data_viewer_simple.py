@@ -4,7 +4,7 @@ MLTF Data Viewer - Shows the MLTF datatracker data from test files
 This displays the Meta-Layer Task Force data so you can see it working.
 """
 
-from flask import Flask, render_template_string, request, redirect, url_for, flash, session, send_file
+from flask import Flask, render_template_string, request, redirect, url_for, flash, session, send_file, jsonify
 from flask_sqlalchemy import SQLAlchemy
 import os
 import re
@@ -113,6 +113,19 @@ class DocumentHistory(db.Model):
     details = db.Column(db.Text)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
+class WorkingGroupMember(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    group_acronym = db.Column(db.String(50), index=True)
+    user_name = db.Column(db.String(100), index=True)
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class WorkingGroupChair(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    group_acronym = db.Column(db.String(50), unique=True, index=True)
+    chair_name = db.Column(db.String(100))
+    approved = db.Column(db.Boolean, default=False)
+    set_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 # Store users in memory (in a real app, this would be a database)
 USERS = {
     'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'light'},
@@ -168,6 +181,21 @@ def require_auth(f):
         return f(*args, **kwargs)
     decorated_function.__name__ = f.__name__
     return decorated_function
+
+def require_role(required_role):
+    """Decorator to require a specific role"""
+    def decorator(f):
+        def decorated_function(*args, **kwargs):
+            if 'user' not in session:
+                flash('Please log in to access this page.', 'error')
+                return redirect(url_for('login'))
+            current_user = get_current_user()
+            if not current_user or current_user.get('role') != required_role:
+                return "Access denied", 403
+            return f(*args, **kwargs)
+        decorated_function.__name__ = f.__name__
+        return decorated_function
+    return decorator
 
 def get_current_user():
     """Get current logged in user"""
@@ -345,17 +373,6 @@ def render_comment_tree(comments, draft_name, level=0):
     html += '</div>'
     return html
 
-# Sample participant names for testing
-SAMPLE_PARTICIPANTS = [
-    "Henrik Levkowetz", "John Klensin", "Dave Crocker", "Marshall Rose", "Erik Nordmark",
-    "Scott Bradner", "Brian Carpenter", "Fred Baker", "Harald Alvestrand", "Vint Cerf",
-    "Bob Hinden", "Steve Deering", "Randy Bush", "Geoff Huston", "Tony Hain",
-    "Mark Handley", "Sally Floyd", "Vern Paxson", "Craig Partridge", "Jon Postel",
-    "David Clark", "Radia Perlman", "Paul Mockapetris", "Tim Berners-Lee", "Dan Bernstein",
-    "Wietse Venema", "Theo de Raadt", "Linus Torvalds", "Richard Stallman", "Eric Raymond",
-    "Alan Cox", "Andrew Tridgell", "Larry Wall", "Guido van Rossum", "Bjarne Stroustrup",
-    "Dennis Ritchie", "Ken Thompson", "Brian Kernighan", "Rob Pike", "Russ Cox"
-]
 
 # Load MLTF data from test files
 def load_draft_data():
@@ -882,9 +899,9 @@ BASE_TEMPLATE = """
             background: var(--border-hover);
         }}
 
-        /* Dropdown menu z-index fix */
+        /* Dropdown menu z-index fix - very high to ensure it's above everything */
         .dropdown-menu {{
-            z-index: 1100;
+            z-index: 9999;
             border-radius: 12px;
             border: 1px solid var(--border-color);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -1618,6 +1635,94 @@ def profile():
     )
     return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF", user_menu=user_menu, content=profile_content))
 
+@app.route('/admin/')
+@require_role('admin')
+def admin_dashboard():
+    user_menu = generate_user_menu()
+
+    # Get admin statistics
+    total_users = len(USERS)
+    total_groups = len(GROUPS)
+    total_submissions = Submission.query.count()
+    approved_drafts = PublishedDraft.query.count()
+    pending_chairs = WorkingGroupChair.query.filter_by(approved=False).count()
+
+    content = f"""
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <h1 class="mb-4">Admin Dashboard</h1>
+
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-primary">{total_users}</h3>
+                                <p class="mb-0">Total Users</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-success">{total_groups}</h3>
+                                <p class="mb-0">Working Groups</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-warning">{total_submissions}</h3>
+                                <p class="mb-0">Draft Submissions</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-info">{approved_drafts}</h3>
+                                <p class="mb-0">Published Drafts</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>Working Group Chairs</h5>
+                            </div>
+                            <div class="card-body">
+                                <p>Pending Chair Approvals: <strong>{pending_chairs}</strong></p>
+                                <a href="/group/" class="btn btn-primary">Manage Working Groups</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>Draft Submissions</h5>
+                            </div>
+                            <div class="card-body">
+                                <p>Review and approve draft submissions</p>
+                                <a href="/submit/status/" class="btn btn-primary">View Submissions</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(
+        title="Admin Dashboard - MLTF",
+        content=content,
+        user_menu=user_menu
+    )
+
 # Routes
 @app.route('/')
 def home():
@@ -2024,6 +2129,15 @@ def groups():
     user_menu = generate_user_menu()
     groups_html = ""
     for group in GROUPS:
+        # Get chair information from database
+        chair_info = WorkingGroupChair.query.filter_by(group_acronym=group['acronym']).first()
+        if chair_info:
+            chair_display = chair_info.chair_name
+            if not chair_info.approved:
+                chair_display += " (Pending Approval)"
+        else:
+            chair_display = "TBD"
+
         groups_html += f"""
         <div class="col-md-6">
             <div class="card mb-3">
@@ -2038,7 +2152,7 @@ def groups():
                     </div>
                     <div class="mt-2">
                         <small class="text-muted">
-                            Chairs: {', '.join(group['chairs'])}<br>
+                            Chair: {chair_display}<br>
                             {group['description']}
                         </small>
                     </div>
@@ -2046,1865 +2160,396 @@ def groups():
             </div>
         </div>
         """
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Working Groups - IETF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand {{ font-weight: bold; }}
-        .document-card {{ margin-bottom: 1rem; }}
-        .document-title {{ font-weight: bold; color: #0066cc; }}
-        .document-meta {{ font-size: 0.9em; color: #666; }}
-        .status-badge {{ font-size: 0.8em; }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-        </div>
-    </nav>
-    
-    <div class="container mt-4">
-        <h1>Working Groups</h1>
-        <p>Showing {len(GROUPS)} working groups</p>
-        
-        <div class="row">
-            {groups_html}
-        </div>
-    </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
 
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/doc/draft/<draft_name>/comments/', methods=['GET', 'POST'])
-@require_auth
-def draft_comments(draft_name):
-    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
-    if not draft:
-        return "Document not found", 404
-    
-    # Handle new comment submission, likes, and replies
-    if request.method == 'POST':
-        current_user = get_current_user()
-        action = request.form.get('action', 'comment')
-        
-        if action == 'comment':
-            comment_text = request.form.get('comment', '').strip()
-            if comment_text:
-                # Create new comment in database
-                new_comment = Comment(
-                    draft_name=draft_name,
-                    text=comment_text,
-                    author=current_user['name']
-                )
-                db.session.add(new_comment)
-                db.session.commit()
-                
-                # Add to document history
-                add_to_document_history(draft_name, 'Comment added', current_user['name'], f'Added comment: {comment_text[:50]}...')
-                
-                flash('Comment added successfully!', 'success')
-                return redirect(url_for('draft_comments', draft_name=draft_name))
-            else:
-                flash('Please enter a comment.', 'error')
-        
-        elif action == 'like':
-            comment_id = request.form.get('comment_id')
-            if comment_id and current_user:
-                liked = toggle_comment_like(draft_name, comment_id, current_user['name'])
-                action_text = 'liked' if liked else 'unliked'
-                flash(f'Comment {action_text}!', 'success')
-                return redirect(url_for('draft_comments', draft_name=draft_name))
-            else:
-                flash('Please log in to like comments.', 'error')
-                return redirect(url_for('login'))
-        
-        elif action == 'reply':
-            parent_comment_id = request.form.get('parent_comment_id')
-            reply_text = request.form.get('reply_text', '').strip()
-            if reply_text and parent_comment_id and current_user:
-                add_comment_reply(draft_name, parent_comment_id, reply_text, current_user)
-                flash('Reply added successfully!', 'success')
-                return redirect(url_for('draft_comments', draft_name=draft_name))
-            elif not current_user:
-                flash('Please log in to reply to comments.', 'error')
-                return redirect(url_for('login'))
-            else:
-                flash('Please enter a reply.', 'error')
-    
-    # Build comment tree with nested replies
-    all_comments = build_comment_tree(draft_name)
-
-    # Always include sample comments (real IETF-style comments)
-    sample_comments = [
-        {
-            'id': 'sample_1',
-            'author': 'John Smith',
-            'date': '2024-01-15 14:30',
-            'comment': 'This is a great draft! I think the approach is solid and the implementation details are well thought out.',
-            'avatar': 'JS',
-            'replies': []
-        },
-        {
-            'id': 'sample_2',
-            'author': 'Alice Johnson',
-            'date': '2024-01-16 09:15',
-            'comment': 'I have some concerns about the security implications mentioned in section 3.2. Could we discuss this further?',
-            'avatar': 'AJ',
-            'replies': []
-        },
-        {
-            'id': 'sample_3',
-            'author': 'Bob Wilson',
-            'date': '2024-01-16 16:45',
-            'comment': 'The performance metrics look promising. Have you considered the impact on legacy systems?',
-            'avatar': 'BW',
-            'replies': []
-        }
-    ]
-
-    # Combine sample comments with user comments
-    all_comments = sample_comments + all_comments
-    
-    # Render the comment tree with nested replies
-    comments_html = render_comment_tree(all_comments, draft_name)
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Comments for {draft_name} - IETF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand {{ font-weight: bold; }}
-        .avatar {{ font-size: 14px; }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-        </div>
-    </nav>
-    
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
-                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
-                <li class="breadcrumb-item active">Comments</li>
-            </ol>
-        </nav>
-        
-        <h1>Comments for {draft_name}</h1>
-        <p class="lead">{draft['title']}</p>
-        
-        <div class="row">
-            <div class="col-md-8">
-                <h3>Comments ({len(all_comments)})</h3>
-                {comments_html}
-                
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Add a Comment</h5>
-                    </div>
-                    <div class="card-body">
-                        <div id="flash-messages"></div>
-
-                        <form method="POST">
-                            <div class="mb-3">
-                                <label for="author" class="form-label">Your Name</label>
-                                <input type="text" class="form-control" id="author" name="author" placeholder="Enter your name (optional)">
-                            </div>
-                            <div class="mb-3">
-                                <label for="comment" class="form-label">Your Comment</label>
-                                <textarea class="form-control" id="comment" name="comment" rows="4" placeholder="Enter your comment here..." required></textarea>
-                            </div>
-                            <button type="submit" class="btn btn-primary">Submit Comment</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Document Info</h5>
-                    </div>
-                    <div class="card-body">
-                        <p><strong>Name:</strong> {draft['name']}</p>
-                        <p><strong>Title:</strong> {draft['title']}</p>
-                        <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
-                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
-                        <a href="/doc/draft/{draft_name}/" class="btn btn-outline-primary w-100">Back to Document</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        function toggleLike(commentId) {{
-            // Create a form to submit the like action
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.style.display = 'none';
-
-            const actionInput = document.createElement('input');
-            actionInput.type = 'hidden';
-            actionInput.name = 'action';
-            actionInput.value = 'like';
-
-            const commentIdInput = document.createElement('input');
-            commentIdInput.type = 'hidden';
-            commentIdInput.name = 'comment_id';
-            commentIdInput.value = commentId;
-
-            form.appendChild(actionInput);
-            form.appendChild(commentIdInput);
-            document.body.appendChild(form);
-            form.submit();
-        }}
-
-        function toggleReply(commentId) {{
-            // Find the reply form for this comment
-            const replyForm = document.getElementById('reply-form-' + commentId);
-            if (replyForm) {{
-                // Toggle visibility
-                if (replyForm.style.display === 'none' || replyForm.style.display === '') {{
-                    replyForm.style.display = 'block';
-                }} else {{
-                    replyForm.style.display = 'none';
-                }}
-            }}
-        }}
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/doc/draft/<draft_name>/history/')
-def draft_history(draft_name):
-    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
-    if not draft:
-        return "Document not found", 404
-    
-    # Get real history data
-    real_history = DOCUMENT_HISTORY.get(draft_name, [])
-    
-    # Add sample history if no real history exists
-    if not real_history:
-        add_to_document_history(draft_name, 'Document created', 'System', 'Initial version of the document created')
-        real_history = DOCUMENT_HISTORY.get(draft_name, [])
-    
-    history_html = ""
-    
-    for event in real_history:
-        history_html += f"""
-        <div class="timeline-item mb-3">
-            <div class="d-flex">
-                <div class="flex-shrink-0">
-                    <div class="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center" style="width: 40px; height: 40px;">
-                        <i class="fas fa-circle" style="font-size: 8px;"></i>
-                    </div>
-                </div>
-                <div class="flex-grow-1 ms-3">
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <h6 class="card-title mb-1">{event['action']}</h6>
-                                <small class="text-muted">{event['timestamp']}</small>
-                            </div>
-                            <p class="card-text mb-1">{event['details']}</p>
-                            <small class="text-muted">by {event['user']}</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>History for {draft_name} - IETF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand {{ font-weight: bold; }}
-        .timeline-item {{ position: relative; }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-        </div>
-    </nav>
-    
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
-                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
-                <li class="breadcrumb-item active">History</li>
-            </ol>
-        </nav>
-        
-        <h1>History for {draft_name}</h1>
-        <p class="lead">{draft['title']}</p>
-        
-        <div class="row">
-            <div class="col-md-8">
-                <h3>Document History</h3>
-                {history_html}
-            </div>
-            
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Document Info</h5>
-                    </div>
-                    <div class="card-body">
-                        <p><strong>Name:</strong> {draft['name']}</p>
-                        <p><strong>Title:</strong> {draft['title']}</p>
-                        <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
-                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
-                        <a href="/doc/draft/{draft_name}/" class="btn btn-outline-primary w-100">Back to Document</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
-
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/doc/draft/<draft_name>/revisions/')
-def draft_revisions(draft_name):
-    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
-    if not draft:
-        return "Document not found", 404
-    
-    revisions_html = ""
-    sample_revisions = [
-        {
-            'rev': '00',
-            'date': '2024-01-15',
-            'size': '45 KB',
-            'author': 'John Smith',
-            'changes': 'Initial version'
-        },
-        {
-            'rev': '01',
-            'date': '2024-01-16',
-            'size': '47 KB',
-            'author': 'Alice Johnson',
-            'changes': 'Added security section, updated references'
-        },
-        {
-            'rev': '02',
-            'date': '2024-01-17',
-            'size': '49 KB',
-            'author': 'Bob Wilson',
-            'changes': 'Updated performance metrics, fixed typos'
-        }
-    ]
-    
-    for revision in sample_revisions:
-        revisions_html += f"""
-        <tr>
-            <td><a href="/doc/draft/{draft_name}/" class="text-decoration-none">{revision['rev']}</a></td>
-            <td>{revision['date']}</td>
-            <td>{revision['size']}</td>
-            <td>{revision['author']}</td>
-            <td>{revision['changes']}</td>
-            <td>
-                <a href="/doc/draft/{draft_name}/" class="btn btn-sm btn-outline-primary">View</a>
-                <a href="/doc/draft/{draft_name}/" class="btn btn-sm btn-outline-secondary">Download</a>
-            </td>
-        </tr>
-        """
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Revisions for {draft_name} - IETF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand {{ font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-        </div>
-    </nav>
-    
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
-                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
-                <li class="breadcrumb-item active">Revisions</li>
-            </ol>
-        </nav>
-        
-        <h1>Revisions for {draft_name}</h1>
-        <p class="lead">{draft['title']}</p>
-        
-        <div class="row">
-            <div class="col-md-8">
-                <h3>Document Revisions</h3>
-                <div class="table-responsive">
-                    <table class="table table-striped">
-                        <thead>
-                            <tr>
-                                <th>Revision</th>
-                                <th>Date</th>
-                                <th>Size</th>
-                                <th>Author</th>
-                                <th>Changes</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {revisions_html}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Document Info</h5>
-                    </div>
-                    <div class="card-body">
-                        <p><strong>Name:</strong> {draft['name']}</p>
-                        <p><strong>Title:</strong> {draft['title']}</p>
-                        <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
-                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
-                        <a href="/doc/draft/{draft_name}/" class="btn btn-outline-primary w-100">Back to Document</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
-
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/group/<acronym>/')
-def group_detail(acronym):
-    """Display individual working group details"""
-    # Find the group
-    group = None
-    for g in GROUPS:
-        if g['acronym'] == acronym:
-            group = g
-            break
-
-    if not group:
-        return "Working group not found", 404
-
-    user_menu = generate_user_menu()
-    current_user = get_current_user()
-
-    # Check if user is already a member (for demo purposes, we'll just show a join button)
-    is_member = False  # In a real app, this would check a membership table
-
-    join_button = ""
-    if current_user and not is_member:
-        join_button = '<button class="btn btn-primary">Join Working Group</button>'
-    elif current_user and is_member:
-        join_button = '<span class="badge bg-success">Member</span>'
-
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{group['name']} - MLTF</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        :root {{
-            /* Light theme (default) */
-            --bg-color: #ffffff;
-            --bg-secondary: #f7f9fa;
-            --bg-tertiary: #e1e8ed;
-            --text-primary: #14171a;
-            --text-secondary: #657786;
-            --text-muted: #aab8c2;
-            --border-color: #e1e8ed;
-            --border-hover: #ccd6dd;
-            --accent-color: #1d9bf0;
-            --accent-hover: #1a8cd8;
-            --success-color: #00ba7c;
-            --warning-color: #f7b529;
-            --error-color: #f4212e;
-            --navbar-bg: #ffffff;
-            --navbar-text: #14171a;
-            --navbar-border: #e1e8ed;
-            --card-bg: #ffffff;
-            --card-border: #e1e8ed;
-            --input-bg: #ffffff;
-            --input-border: #657786;
-            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.15);
-        }}
-
-        [data-theme="dark"] {{
-            /* Dark theme */
-            --bg-color: #000000;
-            --bg-secondary: #16181c;
-            --bg-tertiary: #1d1f23;
-            --text-primary: #ffffff;
-            --text-secondary: #8b98a5;
-            --text-muted: #6c7b8a;
-            --border-color: #2f3336;
-            --border-hover: #3d4043;
-            --accent-color: #1d9bf0;
-            --accent-hover: #1a8cd8;
-            --success-color: #00ba7c;
-            --warning-color: #f7b529;
-            --error-color: #f4212e;
-            --navbar-bg: #16181c;
-            --navbar-text: #ffffff;
-            --navbar-border: #2f3336;
-            --card-bg: #16181c;
-            --card-border: #2f3336;
-            --input-bg: #16181c;
-            --input-border: #3d4043;
-            --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.4);
-        }}
-
-        * {{
-            box-sizing: border-box;
-        }}
-
-        body {{
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.5;
-            margin: 0;
-            min-height: 100vh;
-            transition: background-color 0.2s ease, color 0.2s ease;
-        }}
-
-        /* Modern navbar similar to X */
-        .navbar {{
-            background-color: var(--navbar-bg) !important;
-            border-bottom: 1px solid var(--navbar-border);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            box-shadow: var(--shadow);
-            padding: 0;
-            height: 53px;
-        }}
-
-        .navbar-brand {{
-            color: var(--navbar-text) !important;
-            font-weight: 700;
-            font-size: 18px;
-            padding: 16px 20px;
-            margin: 0;
-        }}
-
-        .navbar-brand:hover {{
-            color: var(--accent-color) !important;
-        }}
-
-        .navbar-nav {{
-            align-items: center;
-        }}
-
-        .nav-link {{
-            color: var(--text-secondary) !important;
-            font-weight: 500;
-            padding: 16px 20px;
-            margin: 0;
-            border-radius: 0;
-            transition: all 0.2s ease;
-        }}
-
-        .nav-link:hover {{
-            background-color: var(--bg-secondary);
-            color: var(--accent-color) !important;
-        }}
-
-        .nav-link.active {{
-            color: var(--accent-color) !important;
-            border-bottom: 3px solid var(--accent-color);
-            background-color: transparent;
-        }}
-
-        /* Theme toggle button */
-        .theme-toggle {{
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            font-size: 18px;
-            padding: 16px 20px;
-            cursor: pointer;
-            transition: color 0.2s ease;
-        }}
-
-        .theme-toggle:hover {{
-            color: var(--accent-color);
-        }}
-
-        /* Cards with modern styling */
-        .card {{
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            box-shadow: var(--shadow);
-            transition: all 0.2s ease;
-        }}
-
-        .card:hover {{
-            box-shadow: var(--shadow-hover);
-            border-color: var(--border-hover);
-        }}
-
-        .card-header {{
-            background-color: transparent;
-            border-bottom: 1px solid var(--card-border);
-            border-radius: 16px 16px 0 0 !important;
-            padding: 16px 20px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }}
-
-        .card-body {{
-            padding: 20px;
-        }}
-
-        /* Buttons styled like X */
-        .btn {{
-            border-radius: 20px;
-            font-weight: 700;
-            padding: 8px 16px;
-            transition: all 0.2s ease;
-        }}
-
-        .btn-primary {{
-            background-color: var(--accent-color);
-            border-color: var(--accent-color);
-            color: white;
-        }}
-
-        .btn-primary:hover {{
-            background-color: var(--accent-hover);
-            border-color: var(--accent-hover);
-            transform: translateY(-1px);
-        }}
-
-        .btn-outline-primary {{
-            border-color: var(--text-secondary);
-            color: var(--text-primary);
-        }}
-
-        .btn-outline-primary:hover {{
-            background-color: var(--accent-color);
-            border-color: var(--accent-color);
-            color: white;
-        }}
-
-        .btn-outline-secondary {{
-            border-color: var(--border-color);
-            color: var(--text-secondary);
-        }}
-
-        .btn-outline-secondary:hover {{
-            background-color: var(--bg-secondary);
-            border-color: var(--border-hover);
-            color: var(--text-primary);
-        }}
-
-        /* Form inputs */
-        .form-control {{
-            background-color: var(--input-bg);
-            border: 1px solid var(--input-border);
-            border-radius: 8px;
-            color: var(--text-primary);
-            padding: 12px 16px;
-            transition: all 0.2s ease;
-        }}
-
-        .form-control:focus {{
-            border-color: var(--accent-color);
-            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
-            background-color: var(--input-bg);
-        }}
-
-        .form-control::placeholder {{
-            color: var(--text-muted);
-        }}
-
-        /* Alerts */
-        .alert {{
-            border-radius: 12px;
-            border: none;
-            padding: 16px 20px;
-        }}
-
-        .alert-info {{
-            background-color: rgba(29, 155, 240, 0.1);
-            color: var(--accent-color);
-        }}
-
-        /* Badges */
-        .badge {{
-            border-radius: 12px;
-            font-weight: 500;
-            padding: 4px 8px;
-        }}
-
-        /* Breadcrumbs */
-        .breadcrumb {{
-            background-color: transparent;
-            padding: 0;
-            margin-bottom: 20px;
-        }}
-
-        .breadcrumb-item a {{
-            color: var(--text-secondary);
-        }}
-
-        .breadcrumb-item.active {{
-            color: var(--text-primary);
-            font-weight: 500;
-        }}
-
-        /* Flash messages */
-        #flash-messages {{
-            position: fixed;
-            top: 70px;
-            right: 20px;
-            z-index: 1000;
-            max-width: 400px;
-        }}
-
-        .flash-message {{
-            margin-bottom: 10px;
-            padding: 12px 16px;
-            border-radius: 12px;
-            font-weight: 500;
-            box-shadow: var(--shadow);
-        }}
-
-        .flash-success {{
-            background-color: rgba(0, 186, 124, 0.1);
-            color: var(--success-color);
-            border: 1px solid rgba(0, 186, 124, 0.2);
-        }}
-
-        .flash-error {{
-            background-color: rgba(244, 33, 46, 0.1);
-            color: var(--error-color);
-            border: 1px solid rgba(244, 33, 46, 0.2);
-        }}
-
-        .flash-info {{
-            background-color: rgba(247, 181, 41, 0.1);
-            color: var(--warning-color);
-            border: 1px solid rgba(247, 181, 41, 0.2);
-        }}
-
-        /* Avatar styling */
-        .avatar {{
-            border-radius: 50%;
-            object-fit: cover;
-        }}
-
-        /* X-inspired content width limitation - 8 inches at 96 DPI */
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            padding-left: 24px;
-            padding-right: 24px;
-        }}
-
-        /* Responsive adjustments */
-        @media (max-width: 768px) {{
-            .navbar-brand {{
-                font-size: 16px;
-                padding: 16px 15px;
-            }}
-
-            .nav-link {{
-                padding: 16px 12px;
-                font-size: 14px;
-            }}
-
-            .theme-toggle {{
-                padding: 16px 15px;
-            }}
-
-            .card {{
-                border-radius: 12px;
-            }}
-
-            .card-header {{
-                border-radius: 12px 12px 0 0 !important;
-            }}
-
-            .container {{
-                padding-left: 15px;
-                padding-right: 15px;
-            }}
-        }}
-
-        @media (min-width: 1200px) {{
-            .container {{
-                padding-left: 40px;
-                padding-right: 40px;
-            }}
-        }}
-
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {{
-            width: 8px;
-        }}
-
-        ::-webkit-scrollbar-track {{
-            background: var(--bg-secondary);
-        }}
-
-        ::-webkit-scrollbar-thumb {{
-            background: var(--border-color);
-            border-radius: 4px;
-        }}
-
-        ::-webkit-scrollbar-thumb:hover {{
-            background: var(--border-hover);
-        }}
-
-        /* Dropdown menu z-index fix */
-        .dropdown-menu {{
-            z-index: 1100;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            background-color: var(--card-bg);
-            margin-top: 8px;
-        }}
-
-        .dropdown-item {{
-            color: var(--text-primary);
-            padding: 12px 16px;
-            transition: background-color 0.2s ease;
-        }}
-
-        .dropdown-item:hover {{
-            background-color: var(--bg-secondary);
-            color: var(--accent-color);
-        }}
-
-        .dropdown-toggle {{
-            border: none;
-            background: none;
-            color: var(--text-secondary);
-            font-weight: 500;
-            padding: 16px 12px;
-            border-radius: 8px;
-            transition: all 0.2s ease;
-        }}
-
-        .dropdown-toggle:hover {{
-            background-color: var(--bg-secondary);
-            color: var(--text-primary);
-        }}
-
-        .dropdown-toggle:focus {{
-            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
-        }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg">
-        <div class="container">
-            <a class="navbar-brand" href="/">
-                <i class="fas fa-layer-group me-2"></i>
-                MLTF
-            </a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link active" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-            <div class="navbar-nav ms-auto">
-                {user_menu}
-                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
-                    <i class="fas fa-moon"></i>
-                </button>
-            </div>
-        </div>
-    </nav>
-
-    <div id="flash-messages"></div>
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item"><a href="/group/">Working Groups</a></li>
-                <li class="breadcrumb-item active">{group['acronym']}</li>
-            </ol>
-        </nav>
-
-        <div class="row">
-            <div class="col-lg-8">
-                <div class="card">
-                    <div class="card-header">
-                        <h1 class="h3 mb-0">{group['name']}</h1>
-                    </div>
-                    <div class="card-body">
-                        <div class="mb-3">
-                            <span class="badge bg-primary me-2">{group['type']}</span>
-                            <span class="badge bg-success">{group['state']}</span>
-                        </div>
-
-                        <p class="lead">{group['description']}</p>
-
-                        <div class="row mt-4">
-                            <div class="col-md-6">
-                                <h5>Leadership</h5>
-                                <ul class="list-unstyled">
-                                    {"".join(f"<li><strong>Chair:</strong> {chair}</li>" for chair in group['chairs'])}
-                                </ul>
-                            </div>
-                            <div class="col-md-6">
-                                <h5>Membership</h5>
-                                <p>Anyone can join this working group to contribute to the development of {group['name'].lower()}.</p>
-                                {join_button}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Sample content for the working group -->
-                <div class="card mt-4">
-                    <div class="card-header">
-                        <h5>Current Activities</h5>
-                    </div>
-                    <div class="card-body">
-                        <p>This working group is actively developing standards and best practices for {group['name'].lower()}.</p>
-                        <ul>
-                            <li>Requirements gathering and analysis</li>
-                            <li>Technical specification development</li>
-                            <li>Implementation guidelines</li>
-                            <li>Community feedback integration</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-lg-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Quick Info</h5>
-                    </div>
-                    <div class="card-body">
-                        <p><strong>Acronym:</strong> {group['acronym']}</p>
-                        <p><strong>Type:</strong> {group['type']}</p>
-                        <p><strong>Status:</strong> {group['state']}</p>
-                        <p><strong>Chairs:</strong> {', '.join(group['chairs'])}</p>
-                    </div>
-                </div>
-
-                <div class="card mt-3">
-                    <div class="card-header">
-                        <h5>Get Involved</h5>
-                    </div>
-                    <div class="card-body">
-                        <p>Join our mailing list to stay updated on working group activities and contribute to discussions.</p>
-                        <button class="btn btn-outline-primary btn-sm">Subscribe to Mailing List</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
-
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/meeting/')
-def meetings():
-    """Display meetings coming soon message"""
-    return """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Meetings - IETF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand { font-weight: bold; }
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link active" href="/meeting/">Meetings</a>
-                <a class="nav-link" href="/person/">People</a>
-            </div>
-            <div class="navbar-nav ms-auto">
-                {user_menu}
-                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
-                    <i class="fas fa-moon"></i>
-                </button>
-            </div>
-        </div>
-    </nav>
-
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item active">Meetings</li>
-            </ol>
-        </nav>
-
-        <div class="text-center mt-5">
-            <div class="card">
-                <div class="card-body">
-                    <h1 class="card-title">Meetings</h1>
-                    <div class="alert alert-info">
-                        <h4 class="alert-heading">Coming Soon</h4>
-                        <p>The Meta-Layer meetings section will provide information about community gatherings, technical discussions, and collaborative events.</p>
-                        <hr>
-                        <p class="mb-0">This feature is currently under development and will be available soon.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
-
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/person/')
-def people():
-    """Display people coming soon message"""
-    return """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>People - IETF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand { font-weight: bold; }
-        .avatar { font-size: 14px; }
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/doc/all/">All Documents</a>
-                <a class="nav-link" href="/doc/active/">Active Documents</a>
-                <a class="nav-link" href="/group/">Working Groups</a>
-                <a class="nav-link" href="/meeting/">Meetings</a>
-                <a class="nav-link active" href="/person/">People</a>
-            </div>
-        </div>
-    </nav>
-
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item active">People</li>
-            </ol>
-        </nav>
-
-        <div class="text-center mt-5">
-            <div class="card">
-                <div class="card-body">
-                    <h1 class="card-title">People</h1>
-                    <div class="alert alert-info">
-                        <h4 class="alert-heading">Coming Soon</h4>
-                        <p>The Meta-Layer people directory will showcase community members, contributors, and participants in the Meta-Layer ecosystem.</p>
-                        <hr>
-                        <p class="mb-0">This feature is currently under development and will be available soon.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
-
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/submit/', methods=['GET', 'POST'])
-def submit_draft():
-    """Draft submission page"""
-    if request.method == 'POST':
-        # Get form data
-        title = request.form.get('title', '').strip()
-        authors = request.form.get('authors', '').strip()
-        abstract = request.form.get('abstract', '').strip()
-        group = request.form.get('group', '').strip()
-        
-        # Handle file upload
-        if 'file' not in request.files:
-            return redirect(url_for('submit_draft') + '?error=No file selected')
-
-        file = request.files['file']
-        if file.filename == '':
-            return redirect(url_for('submit_draft') + '?error=No file selected')
-        
-        if file and allowed_file(file.filename):
-            # Generate submission ID
-            submission_id = str(uuid.uuid4())[:8]
-            
-            # Save file
-            filename = secure_filename(file.filename)
-            file_path = os.path.join(UPLOAD_FOLDER, f"{submission_id}_{filename}")
-            file.save(file_path)
-            
-            # Generate draft name
-            author_list = [a.strip() for a in authors.split(',') if a.strip()]
-            draft_name = generate_draft_name(title, author_list)
-            
-            # Store submission in database
-            submission = Submission(
-                id=submission_id,
-                title=title,
-                authors=author_list,
-                abstract=abstract,
-                group=group,
-                filename=filename,
-                file_path=file_path,
-                draft_name=draft_name,
-                status='submitted',
-                submitted_by='Anonymous User'
-            )
-            db.session.add(submission)
-            db.session.commit()
-            
-            return redirect(url_for('submission_status', submission_id=submission_id) + f'?message=Draft submitted successfully! Submission ID: {submission_id}')
-        else:
-            return redirect(url_for('submit_draft') + '?error=Invalid file type. Please upload PDF, TXT, XML, DOC, or DOCX files.')
-    
-    # Generate user menu
-    current_user = get_current_user()
-    if current_user:
-        user_menu = f"""
-        <div class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                {current_user['name']}
-            </a>
-            <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-            </ul>
-        </div>
-        """
-    else:
-        user_menu = """
-        <div class="nav-item">
-            <a class="nav-link" href="/login/">Sign In</a>
-        </div>
-        """
-    
-    # Check for flash messages in URL params
-    from urllib.parse import unquote
-    message = request.args.get('message')
-    error = request.args.get('error')
-    if message:
-        message = unquote(message)
-    if error:
-        error = unquote(error)
-
-    content = SUBMIT_TEMPLATE
-    if error:
-        content = content.replace('<div id="flash-messages"></div>',
-                                 '<div class="alert alert-danger alert-dismissible fade show" role="alert">' + error + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>')
-    elif message:
-        content = content.replace('<div id="flash-messages"></div>',
-                                 '<div class="alert alert-success alert-dismissible fade show" role="alert">' + message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>')
-
-    return render_template_string(BASE_TEMPLATE.format(title="Submit Draft - IETF Datatracker", user_menu=user_menu, content=content))
-
-@app.route('/submit/status/<submission_id>/')
-def submission_status(submission_id):
-    """Submission status page"""
-    submission = Submission.query.get(submission_id)
-    if not submission:
-        return redirect(url_for('submit_draft') + '?error=Submission not found')
-
-    # Generate user menu
-    current_user = get_current_user()
-    if current_user:
-        user_menu = f"""
-        <div class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                {current_user['name']}
-            </a>
-            <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-            </ul>
-        </div>
-        """
-    else:
-        user_menu = """
-        <div class="nav-item">
-            <a class="nav-link" href="/login/">Sign In</a>
-        </div>
-        """
-
-    # Check for flash messages in URL params
-    from urllib.parse import unquote
-    message = request.args.get('message')
-    if message:
-        message = unquote(message)
-        content = SUBMISSION_STATUS_TEMPLATE.replace('<div id="flash-messages"></div>',
-                                                   '<div class="alert alert-success alert-dismissible fade show" role="alert">' + message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>')
-    else:
-        content = SUBMISSION_STATUS_TEMPLATE
-
-    # Read file content for preview (support multiple formats)
-    file_content = ""
-    file_extension = submission.filename.lower().split('.')[-1] if '.' in submission.filename else ''
-
-    if os.path.exists(submission.file_path):
-        if file_extension in ['txt', 'xml', 'md']:
-            # Plain text files
-            try:
-                with open(submission.file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    file_content = f.read()
-            except Exception as e:
-                file_content = f"Error reading file: {e}"
-
-        elif file_extension == 'pdf' and PDF_SUPPORT:
-            # PDF text extraction
-            try:
-                with open(submission.file_path, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    text = ''
-                    for page in pdf_reader.pages[:3]:  # First 3 pages only
-                        page_text = page.extract_text()
-                        if page_text.strip():
-                            text += page_text + '\n'
-                    if text.strip():
-                        file_content = text.strip()
-                    else:
-                        file_content = "PDF appears to contain no extractable text (may be image-based)."
-            except Exception as e:
-                file_content = f"Error extracting PDF text: {e}"
-
-        elif file_extension == 'docx' and DOCX_SUPPORT:
-            # DOCX text extraction
-            try:
-                doc = docx.Document(submission.file_path)
-                text = ''
-                for para in doc.paragraphs[:20]:  # First 20 paragraphs
-                    if para.text.strip():
-                        text += para.text + '\n'
-                if text.strip():
-                    file_content = text.strip()
-                else:
-                    file_content = "DOCX appears to contain no extractable text."
-            except Exception as e:
-                file_content = f"Error extracting DOCX text: {e}"
-
-        elif file_extension in ['pdf', 'doc', 'docx']:
-            # Fallback for unsupported formats
-            file_content = f"This is a {file_extension.upper()} file. Text extraction not available (library not installed)."
-        else:
-            file_content = f"File type .{file_extension} - preview not supported."
-
-    return render_template_string(BASE_TEMPLATE.format(title=f"Submission Status - {submission_id}", user_menu=user_menu, content=content), submission=submission, file_content=file_content, current_user=current_user)
-
-@app.route('/submit/approve/<submission_id>', methods=['POST'])
-def approve_submission(submission_id):
-    """Approve and publish a submission - requires admin/editor permissions"""
-    current_user = get_current_user()
-    if not current_user:
-        return redirect(url_for('login') + '?next=' + url_for('submission_status', submission_id=submission_id))
-
-    # Check if user has permission to approve (admin or editor role)
-    user_role = current_user.get('role', 'user')
-    if user_role not in ['admin', 'editor'] and current_user['name'] not in ['admin', 'Admin User']:
-        return redirect(url_for('submission_status', submission_id=submission_id) + '?error=You do not have permission to approve submissions.')
-
-    submission = Submission.query.get(submission_id)
-    if not submission:
-        return redirect(url_for('submit_draft') + '?error=Submission not found')
-
-    # Create a published draft entry in database
-    published_draft = PublishedDraft(
-        name=submission.draft_name,
-        title=submission.title,
-        authors=submission.authors,
-        group=submission.group,
-        status='active',
-        rev='00',
-        pages=1,  # Placeholder
-        words=len(submission.abstract.split()) if submission.abstract else 0,
-        date=datetime.now().strftime('%Y-%m-%d'),
-        abstract=submission.abstract or '',
-        stream='ietf',
-        submission_id=submission.id
-    )
-    db.session.add(published_draft)
-
-    # Also add to in-memory drafts list for immediate access
-    draft_entry = {
-        'name': submission.draft_name,
-        'title': submission.title,
-        'authors': submission.authors,
-        'group': submission.group,
-        'status': 'active',
-        'rev': '00',
-        'pages': 1,
-        'words': len(submission.abstract.split()) if submission.abstract else 0,
-        'date': datetime.now().strftime('%Y-%m-%d'),
-        'abstract': submission.abstract or '',
-        'stream': 'ietf'
-    }
-    DRAFTS.append(draft_entry)
-
-    # Update submission status
-    submission.status = 'approved'
-    submission.approved_at = datetime.utcnow()
-
-    # Add to document history
-    history_entry = DocumentHistory(
-        draft_name=submission.draft_name,
-        action='draft_approved',
-        user=current_user['name'],
-        details=f'Draft approved and published from submission {submission_id}'
-    )
-    db.session.add(history_entry)
-
-    db.session.commit()
-
-    return redirect(url_for('submission_status', submission_id=submission_id) + '?message=Draft approved and published successfully!')
-
-@app.route('/submit/reject/<submission_id>', methods=['POST'])
-def reject_submission(submission_id):
-    """Reject a submission"""
-    submission = Submission.query.get(submission_id)
-    if not submission:
-        return redirect(url_for('submit_draft') + '?error=Submission not found')
-
-    # Update submission status
-    submission.status = 'rejected'
-    submission.rejected_at = datetime.utcnow()
-
-    db.session.commit()
-
-    return redirect(url_for('submission_status', submission_id=submission_id) + '?message=Submission rejected.')
-
-@app.route('/admin/')
-def admin_dashboard():
-    """Admin dashboard showing pending submissions"""
-    current_user = get_current_user()
-    if not current_user:
-        return redirect(url_for('login') + '?next=' + url_for('admin_dashboard'))
-
-    user_role = current_user.get('role', 'user')
-    if user_role not in ['admin', 'editor'] and current_user['name'] not in ['admin', 'Admin User']:
-        return redirect(url_for('home') + '?error=Access denied. Admin or editor role required.')
-
-    # Get pending submissions
-    pending_submissions = Submission.query.filter_by(status='submitted').all()
-
-    # Generate user menu
-    if current_user:
-        user_menu = f"""
-        <div class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                {current_user['name']} ({user_role})
-            </a>
-            <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-            </ul>
-        </div>
-        """
-    else:
-        user_menu = """
-        <div class="nav-item">
-            <a class="nav-link" href="/login/">Sign In</a>
-        </div>
-        """
-
-    # Build the admin dashboard content
-    submissions_html = ""
-    for submission in pending_submissions:
-        submissions_html += f"""
-        <div class="card mb-3">
-            <div class="card-header">
-                <h6 class="mb-0">
-                    <a href="/submit/status/{submission.id}/">{submission.title}</a>
-                    <span class="badge bg-warning ms-2">Pending Review</span>
-                </h6>
-            </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-6">
-                        <p><strong>Authors:</strong> {', '.join(submission.authors)}</p>
-                        <p><strong>Group:</strong> {submission.group}</p>
-                        <p><strong>Submitted:</strong> {submission.submitted_at}</p>
-                    </div>
-                    <div class="col-md-6">
-                        <p><strong>File:</strong> {submission.filename}</p>
-                        <p><strong>Draft Name:</strong> {submission.draft_name}</p>
-                        <div class="btn-group">
-                            <a href="/submit/status/{submission.id}/" class="btn btn-outline-primary btn-sm">Review</a>
-                            <form method="POST" action="/submit/approve/{submission.id}" style="display: inline;">
-                                <button type="submit" class="btn btn-success btn-sm">Approve</button>
-                            </form>
-                            <form method="POST" action="/submit/reject/{submission.id}" style="display: inline;">
-                                <button type="submit" class="btn btn-danger btn-sm">Reject</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-                {f'<div class="mt-2"><strong>Abstract:</strong> {submission.abstract}</div>' if submission.abstract else ''}
-            </div>
-        </div>
-        """
+    # Get theme from session or user preference
+    current_theme = session.get('theme', 'light')
 
     content = f"""
     <div class="container mt-4">
         <div class="row">
-            <div class="col-md-12">
-                <h1>Admin Dashboard</h1>
-                <p class="lead">Manage pending submissions and system administration</p>
+            <div class="col-12">
+                <h1 class="mb-4">Working Groups</h1>
+                <p class="lead mb-4">Browse the Meta-Layer Desirable Properties working groups.</p>
 
-                <div class="row mb-4">
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-body text-center">
-                                <h3 class="text-warning">{len(pending_submissions)}</h3>
-                                <p class="mb-0">Pending Reviews</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-body text-center">
-                                <h3 class="text-success">{Submission.query.filter_by(status='approved').count()}</h3>
-                                <p class="mb-0">Approved</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-body text-center">
-                                <h3 class="text-danger">{Submission.query.filter_by(status='rejected').count()}</h3>
-                                <p class="mb-0">Rejected</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <h3>Pending Submissions</h3>
-                {submissions_html if submissions_html else '<div class="alert alert-info">No pending submissions to review.</div>'}
-
-                <div class="mt-4">
-                    <a href="/" class="btn btn-secondary">Back to Home</a>
-                    <a href="/doc/all/" class="btn btn-outline-primary ms-2">View All Documents</a>
+                <div class="row">
+                    {groups_html}
                 </div>
             </div>
         </div>
     </div>
     """
 
-    return render_template_string(BASE_TEMPLATE.format(title="Admin Dashboard - IETF Datatracker", user_menu=user_menu, content=content))
+    return BASE_TEMPLATE.format(
+        title="Working Groups - MLTF",
+        content=content,
+        user_menu=user_menu
+    )
+@app.route('/group/<acronym>/')
+def group_detail(acronym):
+    """Display individual working group details"""
+    # Find the group - handle both full acronyms and short forms (DP1, DP2, etc.)
+    group = None
+    full_acronym = acronym  # Default to the URL parameter
 
-@app.route('/download/<submission_id>')
-def download_file(submission_id):
-    """Download a submitted file"""
-    submission = Submission.query.get(submission_id)
-    if not submission or not os.path.exists(submission.file_path):
-        return "File not found", 404
+    for g in GROUPS:
+        if g['acronym'] == acronym:
+            group = g
+            full_acronym = g['acronym']
+            break
+        # Also check for short form (dp1 -> dp1-federated-auth, DP1 -> dp1-federated-auth)
+        if acronym.lower().startswith('dp') and g['acronym'].startswith(acronym.lower() + '-'):
+            group = g
+            full_acronym = g['acronym']
+            break
 
-    return send_file(submission.file_path, as_attachment=True, download_name=submission.filename)
+    if not group:
+        return f"Working group '{acronym}' not found. Available: {[g['acronym'] for g in GROUPS]}", 404
+
+    user_menu = generate_user_menu()
+    current_user = get_current_user()
+
+    # Check if user is already a member
+    is_member = False
+    if current_user:
+        membership = WorkingGroupMember.query.filter_by(
+            group_acronym=full_acronym,
+            user_name=current_user['name']
+        ).first()
+        is_member = membership is not None
+
+    # Get chair information using the full acronym
+    chair_info = WorkingGroupChair.query.filter_by(group_acronym=full_acronym).first()
+    chair_name = chair_info.chair_name if chair_info else "TBD"
+    chair_approved = chair_info.approved if chair_info else False
+
+    join_button = ""
+    if current_user and not is_member:
+        join_button = f'<button class="btn btn-primary" onclick="joinGroup(\'{full_acronym}\')">Join Working Group</button>'
+    elif current_user and is_member:
+        join_button = '<span class="badge bg-success">Member</span> <button class="btn btn-outline-danger btn-sm ms-2" onclick="leaveGroup(\'{full_acronym}\')">Leave</button>'
+
+    # Admin chair management
+    chair_management = ""
+    if current_user and current_user.get('role') == 'admin':
+        current_chair = chair_info.chair_name if chair_info else ""
+        approve_button = f'<button class="btn btn-success btn-sm ms-2" onclick="approveChair(\\"{full_acronym}\\")">Approve Chair</button>' if chair_info and not chair_info.approved else ''
+        remove_button = f'<button class="btn btn-danger btn-sm ms-2" onclick="removeChair(\\"{full_acronym}\\")">Remove Chair</button>' if chair_info else ''
+        chair_management = f'''
+        <div class="mt-4 p-3 border rounded">
+            <h5>Chair Management</h5>
+            <form method="POST" action="/group/{full_acronym}/set_chair" class="d-flex gap-2">
+                <input type="text" name="chair_name" class="form-control" placeholder="Chair name" value="{current_chair}">
+                <button type="submit" class="btn btn-warning">Set Chair</button>
+            </form>
+            {approve_button}
+            {remove_button}
+        </div>
+        '''
+
+    # Get theme from session or user preference
+    current_theme = session.get('theme', current_user.get('theme', 'light') if current_user else 'light')
+
+    content = f"""
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <nav aria-label="breadcrumb">
+                    <ol class="breadcrumb">
+                        <li class="breadcrumb-item"><a href="/">Home</a></li>
+                        <li class="breadcrumb-item"><a href="/group/">Working Groups</a></li>
+                        <li class="breadcrumb-item active">{group['name']}</li>
+                    </ol>
+                </nav>
+
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <h1 class="card-title mb-2">{group['name']}</h1>
+                                <p class="text-muted mb-3">{group['acronym'].upper()}</p>
+                                <p class="card-text">{group['description']}</p>
+                            </div>
+                            <div class="text-end">
+                                {join_button}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-8">
+                        <div class="card mb-4">
+                            <div class="card-header">
+                                <h5 class="mb-0">About</h5>
+                            </div>
+                            <div class="card-body">
+                                <p>{group['description']}</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card mb-4">
+                            <div class="card-header">
+                                <h5 class="mb-0">Leadership</h5>
+                            </div>
+                            <div class="card-body">
+                                <p><strong>Chair:</strong> {chair_name}</p>
+                                {'<span class="badge bg-warning">Pending Approval</span>' if not chair_approved and chair_name != "TBD" else ''}
+                            </div>
+                        </div>
+
+                        {chair_management}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    function joinGroup(acronym) {{
+        fetch(`/group/${{acronym}}/join`, {{
+            method: 'POST',
+            headers: {{
+                'Content-Type': 'application/json',
+            }}
+        }})
+        .then(response => response.json())
+        .then(data => {{
+            if (data.success) {{
+                location.reload();
+            }} else {{
+                alert('Error joining group: ' + data.message);
+            }}
+        }})
+        .catch(error => {{
+            console.error('Error:', error);
+            alert('Error joining group');
+        }});
+    }}
+
+    function leaveGroup(acronym) {{
+        fetch(`/group/${{acronym}}/leave`, {{
+            method: 'POST',
+            headers: {{
+                'Content-Type': 'application/json',
+            }}
+        }})
+        .then(response => response.json())
+        .then(data => {{
+            if (data.success) {{
+                location.reload();
+            }} else {{
+                alert('Error leaving group: ' + data.message);
+            }}
+        }})
+        .catch(error => {{
+            console.error('Error:', error);
+            alert('Error leaving group');
+        }});
+    }}
+
+    function approveChair(acronym) {{
+        fetch(`/group/${{acronym}}/approve_chair`, {{
+            method: 'POST',
+            headers: {{
+                'Content-Type': 'application/json',
+            }}
+        }})
+        .then(response => response.json())
+        .then(data => {{
+            if (data.success) {{
+                location.reload();
+            }} else {{
+                alert('Error approving chair: ' + data.message);
+            }}
+        }})
+        .catch(error => {{
+            console.error('Error:', error);
+            alert('Error approving chair');
+        }});
+    }}
+
+    function removeChair(acronym) {{
+        if (confirm('Are you sure you want to remove the chair?')) {{
+            fetch(`/group/${{acronym}}/remove_chair`, {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'application/json',
+                }}
+            }})
+            .then(response => response.json())
+            .then(data => {{
+                if (data.success) {{
+                    location.reload();
+                }} else {{
+                    alert('Error removing chair: ' + data.message);
+                }}
+            }})
+            .catch(error => {{
+                console.error('Error:', error);
+                alert('Error removing chair');
+            }});
+        }}
+    }}
+    </script>
+    """
+
+    return BASE_TEMPLATE.format(
+        title=f"{group['name']} - MLTF",
+        content=content,
+        user_menu=user_menu
+    )
+
+@app.route('/group/<acronym>/join', methods=['POST'])
+@require_auth
+def join_group(acronym):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+
+    # Check if already a member
+    existing = WorkingGroupMember.query.filter_by(
+        group_acronym=acronym,
+        user_name=current_user['name']
+    ).first()
+
+    if existing:
+        return jsonify({'success': False, 'message': 'Already a member'}), 400
+
+    # Add membership
+    membership = WorkingGroupMember(
+        group_acronym=acronym,
+        user_name=current_user['name']
+    )
+    db.session.add(membership)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Joined successfully'})
+
+@app.route('/group/<acronym>/leave', methods=['POST'])
+@require_auth
+def leave_group(acronym):
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+
+    # Remove membership
+    membership = WorkingGroupMember.query.filter_by(
+        group_acronym=acronym,
+        user_name=current_user['name']
+    ).first()
+
+    if not membership:
+        return jsonify({'success': False, 'message': 'Not a member'}), 400
+
+    db.session.delete(membership)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Left successfully'})
+
+@app.route('/group/<acronym>/set_chair', methods=['POST'])
+@require_role('admin')
+def set_group_chair(acronym):
+    chair_name = request.form.get('chair_name', '').strip()
+    if not chair_name:
+        return jsonify({'success': False, 'message': 'Chair name required'}), 400
+
+    # Remove existing chair if any
+    existing = WorkingGroupChair.query.filter_by(group_acronym=acronym).first()
+    if existing:
+        db.session.delete(existing)
+
+    # Add new chair (unapproved)
+    chair = WorkingGroupChair(
+        group_acronym=acronym,
+        chair_name=chair_name,
+        approved=False
+    )
+    db.session.add(chair)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Chair set successfully'})
+
+@app.route('/group/<acronym>/approve_chair', methods=['POST'])
+@require_role('admin')
+def approve_group_chair(acronym):
+    chair = WorkingGroupChair.query.filter_by(group_acronym=acronym).first()
+    if not chair:
+        return jsonify({'success': False, 'message': 'No chair set'}), 404
+
+    chair.approved = True
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Chair approved successfully'})
+
+@app.route('/group/<acronym>/remove_chair', methods=['POST'])
+@require_role('admin')
+def remove_group_chair(acronym):
+    chair = WorkingGroupChair.query.filter_by(group_acronym=acronym).first()
+    if not chair:
+        return jsonify({'success': False, 'message': 'No chair set'}), 404
+
+    db.session.delete(chair)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Chair removed successfully'})
+
+@app.route('/person/')
+def people():
+    """People directory - coming soon"""
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'light')
+
+    content = """
+    <div class="container mt-4">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="text-center">
+                    <i class="fas fa-user-friends fa-4x text-muted mb-4"></i>
+                    <h1 class="mb-3">People Directory</h1>
+                    <p class="lead text-muted mb-4">Coming Soon</p>
+                    <p class="mb-4">We're building a comprehensive directory of MLTF participants and contributors. This feature will help you connect with other members of the community.</p>
+                    <a href="/" class="btn btn-primary">Return to Home</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(
+        title="People Directory - MLTF",
+        content=content,
+        user_menu=user_menu
+    )
+
+@app.route('/meeting/')
+def meetings():
+    """Meetings - coming soon"""
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'light')
+
+    content = """
+    <div class="container mt-4">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="text-center">
+                    <i class="fas fa-calendar fa-4x text-muted mb-4"></i>
+                    <h1 class="mb-3">Meetings</h1>
+                    <p class="lead text-muted mb-4">Coming Soon</p>
+                    <p class="mb-4">Information about upcoming MLTF meetings and sessions will be available here. Stay tuned for announcements about our first events.</p>
+                    <a href="/" class="btn btn-primary">Return to Home</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(
+        title="Meetings - MLTF",
+        content=content,
+        user_menu=user_menu
+    )
 
 if __name__ == '__main__':
-    with app.app_context():
-        print("Starting IETF Data Viewer...")
-        init_db()  # Initialize database tables
-        print(f"Loaded {len(DRAFTS)} drafts and {len(GROUPS)} groups")
-
-        # Count database records
-        submission_count = Submission.query.count()
-        comment_count = Comment.query.count()
-        history_count = DocumentHistory.query.count()
-        print(f"Database: {submission_count} submissions, {comment_count} comments, {history_count} history entries")
-
     app.run(host='0.0.0.0', port=8000, debug=True)
+
