@@ -355,7 +355,7 @@ def render_comment_tree(comments, draft_name, level=0):
     """Recursively render comments and their nested replies"""
     if not comments:
         return ""
-
+    
     indent_class = f"ms-{level * 4}" if level > 0 else ""
     html = f'<div class="{indent_class} mt-2">' if level > 0 else '<div class="mt-2">'
 
@@ -1143,7 +1143,7 @@ SUBMIT_TEMPLATE = """
                 </div>
                 <div class="card-body">
                     <div id="flash-messages"></div>
-
+                    
                     <form method="POST" enctype="multipart/form-data">
                         <div class="mb-3">
                             <label for="title" class="form-label">Document Title *</label>
@@ -1212,7 +1212,7 @@ SUBMIT_TEMPLATE = """
                         <li>Maximum 16MB file size</li>
                         <li>Use standard MLTF formatting</li>
                     </ul>
-
+                    
                     <h6>Content Requirements:</h6>
                     <ul class="small">
                         <li>Clear, descriptive title</li>
@@ -1320,7 +1320,7 @@ SUBMISSION_STATUS_TEMPLATE = """
     <p class="lead">Track your Internet-Draft submission</p>
 
     <div id="flash-messages"></div>
-
+    
     <div class="row">
         <div class="col-md-8">
             <div class="card">
@@ -1402,8 +1402,8 @@ SUBMISSION_STATUS_TEMPLATE = """
                                 <p class="text-muted small">{{ submission.submitted_at }}</p>
                             </div>
                         </div>
+                        {% if submission.status in ['approved', 'rejected'] %}
                         <div class="timeline-item">
-                            {% if submission.status in ['approved', 'rejected'] %}
                             <div class="timeline-marker bg-success"></div>
                             <div class="timeline-content">
                                 <h6>Initial Review</h6>
@@ -1416,14 +1416,16 @@ SUBMISSION_STATUS_TEMPLATE = """
                                     {% endif %}
                                 </p>
                             </div>
-                            {% else %}
+                        </div>
+                        {% else %}
+                        <div class="timeline-item">
                             <div class="timeline-marker bg-secondary"></div>
                             <div class="timeline-content">
                                 <h6>Initial Review</h6>
                                 <p class="text-muted small">In Progress</p>
                             </div>
-                            {% endif %}
                         </div>
+                        {% endif %}
                         {% if submission.status == 'approved' %}
                         <div class="timeline-item">
                             <div class="timeline-marker bg-primary"></div>
@@ -1464,7 +1466,7 @@ SUBMISSION_STATUS_TEMPLATE = """
                     <a href="/" class="btn btn-outline-secondary w-100">Back to Home</a>
                 </div>
             </div>
-
+            
             <div class="card mt-3">
                 <div class="card-header">
                     <h5>Need Help?</h5>
@@ -1704,27 +1706,46 @@ def submission_detail(submission_id):
 
     # Handle admin actions
     if current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']):
-        content = content.replace(
-            '{% if submission.status == \'submitted\' and (current_user and (current_user.role in [\'admin\', \'editor\'] or current_user.name in [\'admin\', \'Admin User\'])) %}',
-            '<div class="row mb-3"><div class="col-sm-3"><strong>Actions:</strong></div><div class="col-sm-9">'
-        ).replace(
-            '{% endif %}',
-            '</div></div>'
-        )
+        # Replace the entire conditional block with the actions content
+        admin_actions_pattern = r'{% if submission\.status == \'submitted\' and \(current_user and \(current_user\.role in \[\'admin\', \'editor\'\] or current_user\.name in \[\'admin\', \'Admin User\'\]\)\) %}(.*?){% endif %}'
+        admin_actions_replacement = r'''<div class="row mb-3">
+                        <div class="col-sm-3"><strong>Actions:</strong></div>
+                        <div class="col-sm-9">
+                            <form method="POST" action="/submit/approve/''' + str(submission.id) + r'''" style="display: inline;">
+                                <button type="submit" class="btn btn-success btn-sm">Approve & Publish</button>
+                            </form>
+                            <form method="POST" action="/submit/reject/''' + str(submission.id) + r'''" style="display: inline; margin-left: 10px;">
+                                <button type="submit" class="btn btn-danger btn-sm">Reject</button>
+                            </form>
+                        </div>
+                    </div>'''
+        content = re.sub(admin_actions_pattern, admin_actions_replacement, content, flags=re.DOTALL)
     else:
         # Remove admin sections for regular users
         content = re.sub(r'{% if submission\.status == \'submitted\' and .*?%}.*?{% endif %}', '', content, flags=re.DOTALL)
 
-    # Handle status conditionals
+    # Handle status conditionals - replace entire conditional blocks
     if submission.status in ['approved', 'rejected']:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+        # Show completed/rejected timeline item
+        initial_review_pattern = r'{% if submission\.status in \[\'approved\', \'rejected\'\] %}(.*?){% else %}(.*?){% endif %}'
+        initial_review_replacement = r'''\1'''
+        content = re.sub(initial_review_pattern, initial_review_replacement, content, flags=re.DOTALL)
     else:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+        # Show in progress timeline item
+        initial_review_pattern = r'{% if submission\.status in \[\'approved\', \'rejected\'\] %}(.*?){% else %}(.*?){% endif %}'
+        initial_review_replacement = r'''\2'''
+        content = re.sub(initial_review_pattern, initial_review_replacement, content, flags=re.DOTALL)
 
     if submission.status == 'approved':
-        content = content.replace('{% if submission.status == \'approved\' %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+        # Show published timeline item, hide pending items
+        published_pattern = r'{% if submission\.status == \'approved\' %}(.*?){% else %}(.*?){% endif %}'
+        published_replacement = r'''\1'''
+        content = re.sub(published_pattern, published_replacement, content, flags=re.DOTALL)
     else:
-        content = content.replace('{% if submission.status == \'approved\' %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+        # Hide published item, show pending items
+        published_pattern = r'{% if submission\.status == \'approved\' %}(.*?){% else %}(.*?){% endif %}'
+        published_replacement = r'''\2'''
+        content = re.sub(published_pattern, published_replacement, content, flags=re.DOTALL)
 
     # NOW do placeholder replacement after conditionals are processed
     content = content.replace(
@@ -1935,7 +1956,7 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-
+        
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password_hash, password):
             session['user'] = username
@@ -1972,7 +1993,7 @@ def register():
         password = request.form.get('password', '').strip()
         name = request.form.get('name', '').strip()
         email = request.form.get('email', '').strip()
-
+        
         # Check if username or email already exists
         existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
         if existing_user:
@@ -2020,7 +2041,7 @@ def profile():
         if action == 'update_password':
             old_password = request.form.get('old_password', '').strip()
             new_password = request.form.get('new_password', '').strip()
-
+            
             if check_password_hash(user.password_hash, old_password):
                 if len(new_password) >= 6:
                     user.password_hash = generate_password_hash(new_password)
@@ -2030,11 +2051,11 @@ def profile():
                     flash('New password must be at least 6 characters.', 'error')
             else:
                 flash('Current password is incorrect.', 'error')
-
+        
         elif action == 'update_profile':
             name = request.form.get('name', '').strip()
             email = request.form.get('email', '').strip()
-
+            
             # Check if email is already taken by another user
             existing_email = User.query.filter(User.email == email, User.username != session['user']).first()
             if existing_email:
@@ -2064,7 +2085,7 @@ def profile():
     light_selected = 'selected' if current_theme == 'light' else ''
     dark_selected = 'selected' if current_theme == 'dark' else ''
     auto_selected = 'selected' if current_theme == 'auto' else ''
-
+    
     profile_content = PROFILE_TEMPLATE.format(
         current_user_name=current_user['name'],
         current_user_email=current_user['email'],
@@ -3318,17 +3339,17 @@ def all_documents():
             </div>
         </div>
         """
-
+    
     content = f"""
     <div class="container mt-4">
         <h1>All Documents</h1>
         <p>Showing {len(DRAFTS)} documents</p>
-
+        
         <div class="row">
             {docs_html}
         </div>
     </div>
-    """
+"""
 
     return BASE_TEMPLATE.format(title="All Documents - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
@@ -3360,7 +3381,7 @@ def draft_detail(draft_name):
 
     if not draft:
         return "Document not found", 404
-
+    
     # Load full document content
     document_content = "Document content not available."
 
@@ -3481,7 +3502,7 @@ Meta-Layer Initiative
                         </table>
                     </div>
                 </div>
-
+                
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Abstract</h5>
@@ -3511,7 +3532,7 @@ Meta-Layer Initiative
                     </div>
                 </div>
             </div>
-
+            
             <div class="col-md-4">
                 <div class="card">
                     <div class="card-header">
@@ -3524,7 +3545,7 @@ Meta-Layer Initiative
                         <a href="/doc/draft/{draft['name']}/" class="btn btn-outline-primary w-100">Download PDF</a>
                     </div>
                 </div>
-
+                
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Quick Comment</h5>
@@ -3533,25 +3554,25 @@ Meta-Layer Initiative
                         <form method="POST" action="/doc/draft/{draft['name']}/comments/">
                             <div class="mb-3">
                                 <textarea class="form-control" name="comment" rows="3" placeholder="Add a quick comment..." required></textarea>
-                            </div>
+                    </div>
                             <button type="submit" class="btn btn-success btn-sm w-100">Post Comment</button>
                         </form>
-                    </div>
-                </div>
-
+        </div>
+    </div>
+    
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Related Documents</h5>
                     </div>
-                    <div class="card-body">
+                <div class="card-body">
                         <p>Related documents would appear here in the real datatracker.</p>
+                    </div>
                     </div>
                 </div>
             </div>
         </div>
-    </div>
-    """
-
+        """
+    
     # Add document_content to the template
     content = content.replace('{document_content}', document_content)
 
@@ -3563,7 +3584,7 @@ def draft_comments(draft_name):
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
     if not draft:
         return "Document not found", 404
-
+    
     user_menu = generate_user_menu()
     current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
     current_user = get_current_user()
@@ -3571,7 +3592,7 @@ def draft_comments(draft_name):
     # Handle new comment submission
     if request.method == 'POST':
         action = request.form.get('action', 'comment')
-
+        
         if action == 'comment':
             comment_text = request.form.get('comment', '').strip()
             if comment_text:
@@ -3583,15 +3604,15 @@ def draft_comments(draft_name):
                 )
                 db.session.add(new_comment)
                 db.session.commit()
-
+                
                 # Add to document history
                 add_to_document_history(draft_name, 'Comment added', current_user['name'], f'Added comment: {comment_text[:50]}...')
-
+                
                 flash('Comment added successfully!', 'success')
                 return redirect(f'/doc/draft/{draft_name}/comments/')
             else:
                 flash('Please enter a comment.', 'error')
-
+        
         elif action == 'like':
             comment_id = request.form.get('comment_id')
             if comment_id:
@@ -3601,7 +3622,7 @@ def draft_comments(draft_name):
                 return redirect(f'/doc/draft/{draft_name}/comments/')
             else:
                 flash('Invalid comment ID.', 'error')
-
+        
         elif action == 'reply':
             parent_comment_id = request.form.get('parent_comment_id')
             reply_text = request.form.get('reply_text', '').strip()
@@ -3611,10 +3632,10 @@ def draft_comments(draft_name):
                 return redirect(f'/doc/draft/{draft_name}/comments/')
             else:
                 flash('Please enter a reply.', 'error')
-
+    
     # Get comments for this draft and build comment tree
     all_comments = build_comment_tree(draft_name)
-
+    
     # Always include sample comments (real IETF-style comments)
     sample_comments = [
         {
@@ -3642,10 +3663,10 @@ def draft_comments(draft_name):
             'replies': []
         }
     ]
-
+    
     # Combine sample comments with user comments
     all_comments = sample_comments + all_comments
-
+    
     # Render the comment tree with nested replies
     comments_html = render_comment_tree(all_comments, draft_name)
 
@@ -3659,7 +3680,7 @@ def draft_comments(draft_name):
                 <li class="breadcrumb-item active">Comments</li>
             </ol>
         </nav>
-
+        
         <h1>Comments for {draft_name}</h1>
         <p class="lead">{draft['title']}</p>
 
@@ -3670,13 +3691,13 @@ def draft_comments(draft_name):
             <a href="/doc/draft/{draft_name}/history/" class="btn btn-outline-secondary me-2">History</a>
             <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
         </div>
-
+        
         <div class="row">
             <div class="col-md-8">
                 <h3>Comments ({len(all_comments)})</h3>
                 <div id="flash-messages"></div>
                 {comments_html}
-
+                
                 <div class="card mt-4">
                     <div class="card-header">
                         <h5>Add a Comment</h5>
@@ -3692,7 +3713,7 @@ def draft_comments(draft_name):
                     </div>
                 </div>
             </div>
-
+            
             <div class="col-md-4">
                 <div class="card">
                     <div class="card-header">
@@ -3708,7 +3729,7 @@ def draft_comments(draft_name):
             </div>
         </div>
     </div>
-
+    
     <script>
         function toggleLike(commentId) {{
             // Create a form to submit the like action
@@ -3731,21 +3752,21 @@ def draft_comments(draft_name):
             document.body.appendChild(form);
             form.submit();
         }}
-
+        
         function toggleReply(commentId) {{
             // Find the reply form for this comment
             const replyForm = document.getElementById('reply-form-' + commentId);
             if (replyForm) {{
                 // Toggle visibility
                 if (replyForm.style.display === 'none' || replyForm.style.display === '') {{
-                    replyForm.style.display = 'block';
-                }} else {{
-                    replyForm.style.display = 'none';
+                replyForm.style.display = 'block';
+            }} else {{
+                replyForm.style.display = 'none';
                 }}
             }}
         }}
     </script>
-    """
+"""
 
     return BASE_TEMPLATE.format(title=f"Comments - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
 
@@ -3754,13 +3775,13 @@ def draft_history(draft_name):
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
     if not draft:
         return "Document not found", 404
-
+    
     user_menu = generate_user_menu()
     current_theme = session.get('theme', 'dark')
 
     # Get history for this draft
     history = DocumentHistory.query.filter_by(draft_name=draft_name).order_by(DocumentHistory.timestamp.desc()).all()
-
+    
     history_html = ""
     if history:
         for entry in history:
@@ -3783,7 +3804,7 @@ def draft_history(draft_name):
             No history available for this draft.
         </div>
         """
-
+    
     content = f"""
     <div class="container mt-4">
         <nav aria-label="breadcrumb">
@@ -3794,10 +3815,10 @@ def draft_history(draft_name):
                 <li class="breadcrumb-item active">History</li>
             </ol>
         </nav>
-
+        
         <h1>History for {draft_name}</h1>
         <p class="lead">{draft['title']}</p>
-
+        
         <div class="mb-4">
             <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
                 <i class="fas fa-arrow-left me-1"></i>Back to Draft
@@ -3806,8 +3827,8 @@ def draft_history(draft_name):
             <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
         </div>
 
-        {history_html}
-    </div>
+                {history_html}
+            </div>
     """
 
     return BASE_TEMPLATE.format(title=f"History - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
@@ -3824,22 +3845,22 @@ def draft_revisions(draft_name):
     # For now, show a simple revision history
     # In a real system, this would show actual revision differences
     revisions_html = f"""
-    <div class="card">
-        <div class="card-header">
+                <div class="card">
+                    <div class="card-header">
             <h5>Current Revision: {draft['rev']}</h5>
-        </div>
-        <div class="card-body">
+                    </div>
+                    <div class="card-body">
             <p>This draft is currently at revision {draft['rev']}.</p>
             <p><strong>Published:</strong> {draft['date']}</p>
             <p><strong>Pages:</strong> {draft['pages']}</p>
             <p><strong>Words:</strong> {draft['words']}</p>
-        </div>
-    </div>
+                    </div>
+                </div>
 
     <div class="alert alert-info mt-3">
         <i class="fas fa-info-circle me-2"></i>
         Detailed revision history and diff viewing would be implemented in a full datatracker system.
-    </div>
+            </div>
     """
 
     content = f"""
@@ -4026,7 +4047,7 @@ def group_detail(acronym):
                 <input type="text" id="new-chair-input-{full_acronym}" class="form-control" placeholder="Add new chair name">
                 <button type="button" class="btn btn-success" onclick="addChair('{full_acronym}')">Add Chair</button>
                 <button type="button" class="btn btn-warning" onclick="updateChairs('{full_acronym}')">Update Chairs</button>
-            </div>
+        </div>
             <div class="mt-2">
                 <small class="text-muted">Current approved chairs: {", ".join(selected_chairs) if selected_chairs else "None"}</small>
             </div>
@@ -4040,14 +4061,14 @@ def group_detail(acronym):
     <div class="container mt-4">
         <div class="row">
             <div class="col-12">
-                <nav aria-label="breadcrumb">
-                    <ol class="breadcrumb">
-                        <li class="breadcrumb-item"><a href="/">Home</a></li>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
                         <li class="breadcrumb-item"><a href="/group/">Working Groups</a></li>
                         <li class="breadcrumb-item active">{group['name']}</li>
-                    </ol>
-                </nav>
-
+            </ol>
+        </nav>
+        
                 <div class="card mb-4">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start">
@@ -4062,24 +4083,24 @@ def group_detail(acronym):
                         </div>
                     </div>
                 </div>
-
-                <div class="row">
-                    <div class="col-md-8">
+        
+        <div class="row">
+            <div class="col-md-8">
                         <div class="card mb-4">
                             <div class="card-header">
                                 <h5 class="mb-0">About</h5>
-                            </div>
+                </div>
                             <div class="card-body">
                                 <p>{group['description']}</p>
-                            </div>
+            </div>
                         </div>
                     </div>
-                    <div class="col-md-4">
+            <div class="col-md-4">
                         <div class="card mb-4">
-                            <div class="card-header">
+                    <div class="card-header">
                                 <h5 class="mb-0">Leadership</h5>
-                            </div>
-                            <div class="card-body">
+                    </div>
+                    <div class="card-body">
                                 <p><strong>Chair:</strong> {chair_name}</p>
                                 {'<span class="badge bg-warning">Pending Approval</span>' if not chair_approved and chair_name != "TBD" else ''}
                             </div>
@@ -4091,7 +4112,7 @@ def group_detail(acronym):
             </div>
         </div>
     </div>
-
+    
     <script>
     function joinGroup(acronym) {{
         fetch(`/group/${{acronym}}/join`, {{
@@ -4359,12 +4380,12 @@ def people():
                     <p class="lead text-muted mb-4">Coming Soon</p>
                     <p class="mb-4">We're building a comprehensive directory of MLTF participants and contributors. This feature will help you connect with other members of the community.</p>
                     <a href="/" class="btn btn-primary">Return to Home</a>
-                </div>
+        </div>
             </div>
         </div>
-    </div>
-    """
-
+        </div>
+        """
+    
     return BASE_TEMPLATE.format(
         title="People Directory - MLTF",
         theme=session.get('theme', 'dark'),
