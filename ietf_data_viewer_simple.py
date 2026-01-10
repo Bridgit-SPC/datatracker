@@ -10,7 +10,7 @@ import os
 import re
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -1858,74 +1858,233 @@ def profile():
 def admin_dashboard():
     user_menu = generate_user_menu()
 
-    # Get admin statistics
+    # Enhanced admin statistics
     total_users = User.query.count()
     total_groups = len(GROUPS)
     total_submissions = Submission.query.count()
     approved_drafts = PublishedDraft.query.count()
     pending_chairs = WorkingGroupChair.query.filter_by(approved=False).count()
 
+    # Recent activity and alerts
+    pending_submissions = Submission.query.filter_by(status='submitted').count()
+    recent_submissions = Submission.query.order_by(Submission.submitted_at.desc()).limit(5).all()
+    recent_users = User.query.order_by(User.created_at.desc()).limit(5).all()
+
+    # Get most active drafts (by comment count or views if we had them)
+    # For now, just show recent submissions as proxy
+    active_drafts = Submission.query.order_by(Submission.submitted_at.desc()).limit(10).all()
+
+    # Most active users (by login frequency - simplified)
+    active_users = User.query.order_by(User.last_login.desc()).limit(10).all()
+
+    # Build recent activity feed
+    activity_html = ""
+    for submission in recent_submissions[:3]:  # Show last 3 submissions
+        activity_html += f"""
+        <div class="activity-item mb-2">
+            <small class="text-muted">
+                <i class="fas fa-file-alt me-1"></i>
+                New submission: <strong>{submission.title[:50]}...</strong>
+                by {submission.submitted_by}
+                <span class="float-end">{submission.submitted_at.strftime('%m/%d %H:%M')}</span>
+            </small>
+        </div>
+        """
+
+    for user in recent_users[:2]:  # Show last 2 new users
+        activity_html += f"""
+        <div class="activity-item mb-2">
+            <small class="text-muted">
+                <i class="fas fa-user-plus me-1"></i>
+                New user: <strong>{user.name}</strong> ({user.email})
+                <span class="float-end">{user.created_at.strftime('%m/%d %H:%M')}</span>
+            </small>
+        </div>
+        """
+
+    # Build alerts section
+    alerts_html = ""
+    if pending_submissions > 0:
+        alerts_html += f"""
+        <div class="alert alert-warning alert-dismissible fade show" role="alert">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            <strong>{pending_submissions}</strong> draft submission(s) pending review
+            <a href="/admin/submissions/" class="alert-link">Review now</a>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        """
+
+    if pending_chairs > 0:
+        alerts_html += f"""
+        <div class="alert alert-info alert-dismissible fade show" role="alert">
+            <i class="fas fa-users me-2"></i>
+            <strong>{pending_chairs}</strong> working group chair(s) pending approval
+            <a href="/group/" class="alert-link">Manage chairs</a>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        """
+
     content = f"""
     <div class="container mt-4">
+        <!-- Alerts Section -->
+        <div id="admin-alerts" class="mb-4">
+            {alerts_html}
+        </div>
+
         <div class="row">
             <div class="col-12">
-                <h1 class="mb-4">Admin Dashboard</h1>
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h1>Admin Dashboard</h1>
+                    <div>
+                        <a href="/admin/users/" class="btn btn-outline-primary me-2">Manage Users</a>
+                        <a href="/admin/submissions/" class="btn btn-outline-success">Review Submissions</a>
+                    </div>
+                </div>
 
+                <!-- Statistics Cards -->
                 <div class="row mb-4">
-                    <div class="col-md-3">
-                        <div class="card">
+                    <div class="col-md-2">
+                        <div class="card h-100">
                             <div class="card-body text-center">
-                                <h3 class="text-primary">{total_users}</h3>
-                                <p class="mb-0">Total Users</p>
+                                <h4 class="text-primary mb-1">{total_users}</h4>
+                                <p class="mb-0 small">Total Users</p>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-3">
-                        <div class="card">
+                    <div class="col-md-2">
+                        <div class="card h-100">
                             <div class="card-body text-center">
-                                <h3 class="text-success">{total_groups}</h3>
-                                <p class="mb-0">Working Groups</p>
+                                <h4 class="text-success mb-1">{total_groups}</h4>
+                                <p class="mb-0 small">Working Groups</p>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-3">
-                        <div class="card">
+                    <div class="col-md-2">
+                        <div class="card h-100">
                             <div class="card-body text-center">
-                                <h3 class="text-warning">{total_submissions}</h3>
-                                <p class="mb-0">Draft Submissions</p>
+                                <h4 class="text-warning mb-1">{total_submissions}</h4>
+                                <p class="mb-0 small">Total Submissions</p>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-3">
-                        <div class="card">
+                    <div class="col-md-2">
+                        <div class="card h-100">
                             <div class="card-body text-center">
-                                <h3 class="text-info">{approved_drafts}</h3>
-                                <p class="mb-0">Published Drafts</p>
+                                <h4 class="text-info mb-1">{approved_drafts}</h4>
+                                <p class="mb-0 small">Published Drafts</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <h4 class="text-danger mb-1">{pending_submissions}</h4>
+                                <p class="mb-0 small">Pending Review</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <h4 class="text-secondary mb-1">{pending_chairs}</h4>
+                                <p class="mb-0 small">Pending Chairs</p>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="row">
+                    <!-- Recent Activity -->
                     <div class="col-md-6">
                         <div class="card">
-                            <div class="card-header">
-                                <h5>Working Group Chairs</h5>
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0">Recent Activity</h5>
+                                <span class="badge bg-primary">Live</span>
                             </div>
                             <div class="card-body">
-                                <p>Pending Chair Approvals: <strong>{pending_chairs}</strong></p>
-                                <a href="/group/" class="btn btn-primary">Manage Working Groups</a>
+                                {activity_html}
+                                <hr>
+                                <a href="/admin/activity/" class="btn btn-sm btn-outline-primary">View All Activity</a>
                             </div>
                         </div>
                     </div>
+
+                    <!-- Quick Actions -->
                     <div class="col-md-6">
                         <div class="card">
                             <div class="card-header">
-                                <h5>Draft Submissions</h5>
+                                <h5>Quick Actions</h5>
                             </div>
                             <div class="card-body">
-                                <p>Review and approve draft submissions</p>
-                                <a href="/submit/status/" class="btn btn-primary">View Submissions</a>
+                                <div class="d-grid gap-2">
+                                    <a href="/admin/submissions/" class="btn btn-success">
+                                        <i class="fas fa-check-circle me-2"></i>Review Submissions ({pending_submissions} pending)
+                                    </a>
+                                    <a href="/admin/users/" class="btn btn-primary">
+                                        <i class="fas fa-users me-2"></i>Manage Users ({total_users} total)
+                                    </a>
+                                    <a href="/group/" class="btn btn-info">
+                                        <i class="fas fa-users-cog me-2"></i>Manage Working Groups ({pending_chairs} pending chairs)
+                                    </a>
+                                    <a href="/admin/analytics/" class="btn btn-secondary">
+                                        <i class="fas fa-chart-bar me-2"></i>View Analytics
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Content Management Section -->
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <h3 class="mb-3">Content Management</h3>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <!-- Most Active Drafts -->
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>Recent Draft Submissions</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="list-group list-group-flush">
+                                    {"".join([f'''
+                                    <a href="/doc/draft/{draft.id}/" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <strong>{draft.title[:40]}...</strong>
+                                            <br><small class="text-muted">by {draft.submitted_by} • {draft.submitted_at.strftime('%m/%d')}</small>
+                                        </div>
+                                        <span class="badge bg-{'warning' if draft.status == 'submitted' else 'success'}">{draft.status}</span>
+                                    </a>
+                                    ''' for draft in active_drafts[:5]])}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Active Users -->
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>Recent User Activity</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="list-group list-group-flush">
+                                    {"".join([f'''
+                                    <div class="list-group-item d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <strong>{user.name}</strong>
+                                            <br><small class="text-muted">{user.email} • {user.role}</small>
+                                        </div>
+                                        <small class="text-muted">
+                                            {user.last_login.strftime('%m/%d %H:%M') if user.last_login else 'Never logged in'}
+                                        </small>
+                                    </div>
+                                    ''' for user in active_users[:5]])}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1940,6 +2099,793 @@ def admin_dashboard():
         theme=get_current_user().get('theme', 'dark'),
         content=content,
         user_menu=user_menu
+    )
+
+@app.route('/admin/users/')
+@require_role('admin')
+def admin_users():
+    user_menu = generate_user_menu()
+    current_theme = get_current_user().get('theme', 'dark')
+
+    # Get all users with pagination
+    page = request.args.get('page', 1, type=int)
+    per_page = 20
+    search = request.args.get('search', '').strip()
+    role_filter = request.args.get('role', '')
+
+    query = User.query
+
+    if search:
+        query = query.filter(
+            db.or_(
+                User.username.contains(search),
+                User.name.contains(search),
+                User.email.contains(search)
+            )
+        )
+
+    if role_filter:
+        query = query.filter_by(role=role_filter)
+
+    users = query.order_by(User.created_at.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    total_users = query.count()
+
+    # Build user rows
+    user_rows = ""
+    for user in users.items:
+        role_badge = {
+            'admin': 'badge bg-danger',
+            'editor': 'badge bg-warning',
+            'user': 'badge bg-secondary'
+        }.get(user.role, 'badge bg-secondary')
+
+        last_login = user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never'
+
+        user_rows += f"""
+        <tr>
+            <td>
+                <strong>{user.name}</strong><br>
+                <small class="text-muted">@{user.username}</small>
+            </td>
+            <td>{user.email}</td>
+            <td><span class="{role_badge}">{user.role.title()}</span></td>
+            <td>{user.theme.title()}</td>
+            <td>{user.created_at.strftime('%Y-%m-%d')}</td>
+            <td>{last_login}</td>
+            <td>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary btn-sm" onclick="changeRole('{user.username}', '{user.role}')">
+                        <i class="fas fa-user-edit"></i>
+                    </button>
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteUser('{user.username}')">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>
+        """
+
+    # Role filter options
+    role_options = f"""
+    <option value="">All Roles</option>
+    <option value="admin" {'selected' if role_filter == 'admin' else ''}>Admin</option>
+    <option value="editor" {'selected' if role_filter == 'editor' else ''}>Editor</option>
+    <option value="user" {'selected' if role_filter == 'user' else ''}>User</option>
+    """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/admin/">Admin Dashboard</a></li>
+                <li class="breadcrumb-item active">User Management</li>
+            </ol>
+        </nav>
+
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>User Management</h1>
+            <div>
+                <span class="badge bg-info me-2">Total: {total_users} users</span>
+            </div>
+        </div>
+
+        <!-- Filters and Search -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <form method="GET" class="row g-3">
+                    <div class="col-md-6">
+                        <label for="search" class="form-label">Search Users</label>
+                        <input type="text" class="form-control" id="search" name="search"
+                               value="{search}" placeholder="Name, username, or email">
+                    </div>
+                    <div class="col-md-4">
+                        <label for="role" class="form-label">Filter by Role</label>
+                        <select class="form-select" id="role" name="role">
+                            {role_options}
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary me-2">
+                            <i class="fas fa-search me-1"></i>Filter
+                        </button>
+                        <a href="/admin/users/" class="btn btn-outline-secondary">
+                            <i class="fas fa-times"></i>
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Users Table -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Users ({users.total} total)</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Name</th>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Theme</th>
+                                <th>Joined</th>
+                                <th>Last Login</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {user_rows}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pagination -->
+        {f'''
+        <nav aria-label="User pagination" class="mt-4">
+            <ul class="pagination justify-content-center">
+                {f'<li class="page-item {"disabled" if not users.has_prev else ""}"><a class="page-link" href="?page={users.prev_num}&search={search}&role={role_filter}">Previous</a></li>' if users.has_prev else ''}
+                {''.join([f'<li class="page-item {"active" if i == users.page else ""}"><a class="page-link" href="?page={i}&search={search}&role={role_filter}">{i}</a></li>' for i in users.iter_pages()])}
+                {f'<li class="page-item {"disabled" if not users.has_next else ""}"><a class="page-link" href="?page={users.next_num}&search={search}&role={role_filter}">Next</a></li>' if users.has_next else ''}
+            </ul>
+        </nav>
+        ''' if users.pages > 1 else ''}
+    </div>
+
+    <script>
+        function changeRole(username, currentRole) {{
+            const roles = ['user', 'editor', 'admin'];
+            const currentIndex = roles.indexOf(currentRole);
+            const nextRole = roles[(currentIndex + 1) % roles.length];
+
+            if (confirm('Change ' + username + '\'s role from ' + currentRole + ' to ' + nextRole + '?')) {{
+                fetch('/admin/users/' + username + '/role', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify({{ role: nextRole }})
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('Error: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error updating role');
+                }});
+            }}
+        }}
+
+        function deleteUser(username) {{
+            if (confirm('Are you sure you want to delete user ' + username + '? This action cannot be undone.')) {{
+                fetch('/admin/users/' + username + '/delete', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('Error: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error deleting user');
+                }});
+            }}
+        }}
+    </script>
+    """
+
+    return BASE_TEMPLATE.format(
+        title="User Management - MLTF",
+        theme=current_theme,
+        user_menu=user_menu,
+        content=content
+    )
+
+@app.route('/admin/users/<username>/role', methods=['POST'])
+@require_role('admin')
+def change_user_role(username):
+    data = request.get_json()
+    new_role = data.get('role', '')
+
+    if new_role not in ['user', 'editor', 'admin']:
+        return jsonify({'success': False, 'message': 'Invalid role'}), 400
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    # Prevent admin from demoting themselves
+    current_admin = get_current_user()
+    if user.id == current_admin['id'] and new_role != 'admin':
+        return jsonify({'success': False, 'message': 'Cannot change your own admin role'}), 400
+
+    user.role = new_role
+    db.session.commit()
+
+    # Log the action
+    add_to_document_history(f"user-{user.id}", "role_changed", current_admin['name'],
+                           f"Changed {user.name}'s role to {new_role}")
+
+    return jsonify({'success': True, 'message': f'Role changed to {new_role}'})
+
+@app.route('/admin/users/<username>/delete', methods=['POST'])
+@require_role('admin')
+def delete_user(username):
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    # Prevent admin from deleting themselves
+    current_admin = get_current_user()
+    if user.id == current_admin['id']:
+        return jsonify({'success': False, 'message': 'Cannot delete your own account'}), 400
+
+    # Log before deletion
+    add_to_document_history(f"user-{user.id}", "user_deleted", current_admin['name'],
+                           f"Deleted user {user.name} ({user.email})")
+
+    db.session.delete(user)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'User deleted successfully'})
+
+@app.route('/admin/submissions/')
+@require_role('admin')
+def admin_submissions():
+    user_menu = generate_user_menu()
+    current_theme = get_current_user().get('theme', 'dark')
+
+    # Get submissions with filters
+    status_filter = request.args.get('status', 'submitted')
+    page = request.args.get('page', 1, type=int)
+    per_page = 10
+
+    query = Submission.query
+
+    if status_filter and status_filter != 'all':
+        query = query.filter_by(status=status_filter)
+
+    submissions = query.order_by(Submission.submitted_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False)
+
+    # Build submission cards
+    submission_cards = ""
+    for submission in submissions.items:
+        status_badge = {
+            'submitted': 'badge bg-warning text-dark',
+            'approved': 'badge bg-success',
+            'rejected': 'badge bg-danger',
+            'published': 'badge bg-info'
+        }.get(submission.status, 'badge bg-secondary')
+
+        # Get file size if file exists
+        file_size = "N/A"
+        if submission.file_path and os.path.exists(submission.file_path):
+            file_size = f"{os.path.getsize(submission.file_path) / 1024:.1f} KB"
+
+        action_buttons = ""
+        if submission.status == 'submitted':
+            action_buttons = f"""
+            <button class="btn btn-success btn-sm me-2" onclick="approveSubmission('{submission.id}')">
+                <i class="fas fa-check me-1"></i>Approve
+            </button>
+            <button class="btn btn-danger btn-sm me-2" onclick="rejectSubmission('{submission.id}')">
+                <i class="fas fa-times me-1"></i>Reject
+            </button>
+            <button class="btn btn-info btn-sm" onclick="publishAsRFC('{submission.id}')">
+                <i class="fas fa-star me-1"></i>Publish as RFC
+            </button>
+            """
+        elif submission.status == 'approved':
+            action_buttons = f"""
+            <button class="btn btn-info btn-sm me-2" onclick="publishAsRFC('{submission.id}')">
+                <i class="fas fa-star me-1"></i>Publish as RFC
+            </button>
+            <button class="btn btn-warning btn-sm" onclick="unapproveSubmission('{submission.id}')">
+                <i class="fas fa-undo me-1"></i>Unapprove
+            </button>
+            """
+
+        submission_cards += f"""
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">
+                    <a href="/doc/draft/{submission.id}/" class="text-decoration-none">
+                        {submission.title}
+                    </a>
+                </h6>
+                <span class="{status_badge}">{submission.status.title()}</span>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <p class="mb-2"><strong>Authors:</strong> {', '.join(submission.authors)}</p>
+                        <p class="mb-2"><strong>Group:</strong> {submission.group or 'None'}</p>
+                        <p class="mb-2"><strong>Submitted:</strong> {submission.submitted_at.strftime('%Y-%m-%d %H:%M')} by {submission.submitted_by}</p>
+                        <p class="mb-2"><strong>File:</strong> {submission.filename} ({file_size})</p>
+                        {f'<p class="mb-2"><strong>Abstract:</strong> {submission.abstract[:200]}...</p>' if submission.abstract else ''}
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-grid gap-2">
+                            <a href="/doc/draft/{submission.id}/" class="btn btn-outline-primary btn-sm">
+                                <i class="fas fa-eye me-1"></i>View Draft
+                            </a>
+                            {action_buttons}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+
+    # Status filter options
+    status_options = f"""
+    <option value="all" {'selected' if status_filter == 'all' else ''}>All Submissions</option>
+    <option value="submitted" {'selected' if status_filter == 'submitted' else ''}>Pending Review</option>
+    <option value="approved" {'selected' if status_filter == 'approved' else ''}>Approved</option>
+    <option value="rejected" {'selected' if status_filter == 'rejected' else ''}>Rejected</option>
+    <option value="published" {'selected' if status_filter == 'published' else ''}>Published</option>
+    """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/admin/">Admin Dashboard</a></li>
+                <li class="breadcrumb-item active">Submission Management</li>
+            </ol>
+        </nav>
+
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Submission Management</h1>
+            <div>
+                <select class="form-select form-select-sm" onchange="changeStatusFilter(this.value)">
+                    {status_options}
+                </select>
+            </div>
+        </div>
+
+        <!-- Statistics -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-warning">{Submission.query.filter_by(status='submitted').count()}</h4>
+                        <p class="mb-0 small">Pending Review</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-success">{Submission.query.filter_by(status='approved').count()}</h4>
+                        <p class="mb-0 small">Approved</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-danger">{Submission.query.filter_by(status='rejected').count()}</h4>
+                        <p class="mb-0 small">Rejected</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-info">{Submission.query.filter_by(status='published').count()}</h4>
+                        <p class="mb-0 small">Published as RFC</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Submissions -->
+        <div id="submissions-container">
+            {submission_cards}
+        </div>
+
+        <!-- Pagination -->
+        {f'''
+        <nav aria-label="Submission pagination" class="mt-4">
+            <ul class="pagination justify-content-center">
+                {f'<li class="page-item {"disabled" if not submissions.has_prev else ""}"><a class="page-link" href="?page={submissions.prev_num}&status={status_filter}">Previous</a></li>' if submissions.has_prev else ''}
+                {''.join([f'<li class="page-item {"active" if i == submissions.page else ""}"><a class="page-link" href="?page={i}&status={status_filter}">{i}</a></li>' for i in submissions.iter_pages()])}
+                {f'<li class="page-item {"disabled" if not submissions.has_next else ""}"><a class="page-link" href="?page={submissions.next_num}&status={status_filter}">Next</a></li>' if submissions.has_next else ''}
+            </ul>
+        </nav>
+        ''' if submissions.pages > 1 else ''}
+    </div>
+
+    <script>
+        function changeStatusFilter(status) {{
+            window.location.href = '?status=' + status;
+        }}
+
+        function approveSubmission(submissionId) {{
+            if (confirm('Approve this draft submission? It will be marked as approved and ready for publication.')) {{
+                updateSubmissionStatus(submissionId, 'approved');
+            }}
+        }}
+
+        function rejectSubmission(submissionId) {{
+            const reason = prompt('Reason for rejection (optional):');
+            updateSubmissionStatus(submissionId, 'rejected', reason);
+        }}
+
+        function unapproveSubmission(submissionId) {{
+            if (confirm('Remove approval for this submission?')) {{
+                updateSubmissionStatus(submissionId, 'submitted');
+            }}
+        }}
+
+        function publishAsRFC(submissionId) {{
+            const rfcNumber = prompt('Enter RFC number:');
+            if (rfcNumber && confirm('Publish as RFC ' + rfcNumber + '?')) {{
+                updateSubmissionStatus(submissionId, 'published', null, rfcNumber);
+            }}
+        }}
+
+        function updateSubmissionStatus(submissionId, status, reason = null, rfcNumber = null) {{
+            const data = {{ status: status }};
+            if (reason) data.reason = reason;
+            if (rfcNumber) data.rfc_number = rfcNumber;
+
+                fetch('/admin/submissions/' + submissionId + '/status', {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify(data)
+            }})
+            .then(response => response.json())
+            .then(data => {{
+                if (data.success) {{
+                    location.reload();
+                }} else {{
+                    alert('Error: ' + data.message);
+                }}
+            }})
+            .catch(error => {{
+                console.error('Error:', error);
+                alert('Error updating submission status');
+            }});
+        }}
+    </script>
+    """
+
+    return BASE_TEMPLATE.format(
+        title="Submission Management - MLTF",
+        theme=current_theme,
+        user_menu=user_menu,
+        content=content
+    )
+
+@app.route('/admin/submissions/<submission_id>/status', methods=['POST'])
+@require_role('admin')
+def update_submission_status(submission_id):
+    data = request.get_json()
+    new_status = data.get('status', '')
+    reason = data.get('reason', '')
+    rfc_number = data.get('rfc_number', '')
+
+    if new_status not in ['submitted', 'approved', 'rejected', 'published']:
+        return jsonify({'success': False, 'message': 'Invalid status'}), 400
+
+    submission = Submission.query.filter_by(id=submission_id).first()
+    if not submission:
+        return jsonify({'success': False, 'message': 'Submission not found'}), 404
+
+    old_status = submission.status
+    submission.status = new_status
+
+    if new_status == 'rejected' and reason:
+        submission.rejected_at = datetime.utcnow()
+
+    if new_status == 'published' and rfc_number:
+        # Create a published RFC record
+        published_draft = PublishedDraft(
+            name=f"rfc{rfc_number}",
+            title=submission.title,
+            authors=submission.authors,
+            group=submission.group,
+            status='published',
+            date=datetime.utcnow().strftime('%Y-%m-%d'),
+            abstract=submission.abstract,
+            submission_id=submission.id
+        )
+        db.session.add(published_draft)
+
+    db.session.commit()
+
+    # Log the action
+    admin_user = get_current_user()
+    action_details = f"Changed status from {old_status} to {new_status}"
+    if reason:
+        action_details += f" - Reason: {reason}"
+    if rfc_number:
+        action_details += f" - Published as RFC {rfc_number}"
+
+    add_to_document_history(f"submission-{submission.id}", "status_changed",
+                           admin_user['name'], action_details)
+
+    return jsonify({'success': True, 'message': f'Status updated to {new_status}'})
+
+@app.route('/admin/analytics/')
+@require_role('admin')
+def admin_analytics():
+    user_menu = generate_user_menu()
+    current_theme = get_current_user().get('theme', 'dark')
+
+    # Most active drafts (recent submissions)
+    active_drafts = Submission.query.order_by(Submission.submitted_at.desc()).limit(20).all()
+
+    # Most active users (by recent logins and submissions)
+    active_users = User.query.order_by(User.last_login.desc()).limit(20).all()
+
+    # User role distribution
+    role_stats = db.session.query(User.role, db.func.count(User.id)).group_by(User.role).all()
+    role_data = {role: count for role, count in role_stats}
+
+    # Submission status distribution
+    status_stats = db.session.query(Submission.status, db.func.count(Submission.id)).group_by(Submission.status).all()
+    status_data = {status: count for status, count in status_stats}
+
+    # Recent activity (last 30 days)
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    recent_users = User.query.filter(User.created_at >= thirty_days_ago).count()
+    recent_submissions = Submission.query.filter(Submission.submitted_at >= thirty_days_ago).count()
+
+    # Build active drafts table
+    draft_rows = ""
+    for i, draft in enumerate(active_drafts, 1):
+        draft_rows += f"""
+        <tr>
+            <td>{i}</td>
+            <td>
+                <a href="/doc/draft/{draft.id}/" class="text-decoration-none">
+                    {draft.title[:60]}{'...' if len(draft.title) > 60 else ''}
+                </a>
+            </td>
+            <td>{', '.join(draft.authors[:2])}{'...' if len(draft.authors) > 2 else ''}</td>
+            <td>{draft.group or 'None'}</td>
+            <td>{draft.submitted_at.strftime('%Y-%m-%d')}</td>
+            <td><span class="badge bg-{ 'warning' if draft.status == 'submitted' else 'success' if draft.status == 'approved' else 'danger' if draft.status == 'rejected' else 'info'}">{draft.status}</span></td>
+        </tr>
+        """
+
+    # Build active users table
+    user_rows = ""
+    for i, user in enumerate(active_users, 1):
+        user_rows += f"""
+        <tr>
+            <td>{i}</td>
+            <td>
+                <strong>{user.name}</strong><br>
+                <small class="text-muted">@{user.username}</small>
+            </td>
+            <td>{user.email}</td>
+            <td><span class="badge bg-{ 'danger' if user.role == 'admin' else 'warning' if user.role == 'editor' else 'secondary'}">{user.role.title()}</span></td>
+            <td>{user.created_at.strftime('%Y-%m-%d')}</td>
+            <td>{user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never'}</td>
+        </tr>
+        """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/admin/">Admin Dashboard</a></li>
+                <li class="breadcrumb-item active">Analytics</li>
+            </ol>
+        </nav>
+
+        <h1 class="mb-4">Analytics Dashboard</h1>
+
+        <!-- Overview Stats -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-info">{recent_users}</h4>
+                        <p class="mb-0 small">New Users (30 days)</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-success">{recent_submissions}</h4>
+                        <p class="mb-0 small">New Submissions (30 days)</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-primary">{len(active_drafts)}</h4>
+                        <p class="mb-0 small">Total Submissions</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-warning">{len(active_users)}</h4>
+                        <p class="mb-0 small">Registered Users</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- Most Active Drafts -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Most Active Drafts</h5>
+                        <small class="text-muted">Recent submissions and activity</small>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Title</th>
+                                        <th>Authors</th>
+                                        <th>Group</th>
+                                        <th>Date</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {draft_rows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Most Active Users -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Most Active Users</h5>
+                        <small class="text-muted">Users by recent login activity</small>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Name</th>
+                                        <th>Email</th>
+                                        <th>Role</th>
+                                        <th>Joined</th>
+                                        <th>Last Login</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {user_rows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Distribution Charts (Text-based) -->
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>User Role Distribution</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <strong>Admin:</strong> {role_data.get('admin', 0)} users
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-danger" style="width: {(role_data.get('admin', 0) / max(1, sum(role_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <strong>Editor:</strong> {role_data.get('editor', 0)} users
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-warning" style="width: {(role_data.get('editor', 0) / max(1, sum(role_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <strong>User:</strong> {role_data.get('user', 0)} users
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-secondary" style="width: {(role_data.get('user', 0) / max(1, sum(role_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Submission Status Distribution</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <strong>Submitted:</strong> {status_data.get('submitted', 0)}
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-warning" style="width: {(status_data.get('submitted', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <strong>Approved:</strong> {status_data.get('approved', 0)}
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-success" style="width: {(status_data.get('approved', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <strong>Published:</strong> {status_data.get('published', 0)}
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-info" style="width: {(status_data.get('published', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <strong>Rejected:</strong> {status_data.get('rejected', 0)}
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-danger" style="width: {(status_data.get('rejected', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(
+        title="Analytics - MLTF",
+        theme=current_theme,
+        user_menu=user_menu,
+        content=content
     )
 
 # Routes
