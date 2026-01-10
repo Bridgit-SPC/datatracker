@@ -1623,25 +1623,25 @@ def submission_detail(submission_id):
 
     # Render template with submission data
     content = SUBMISSION_STATUS_TEMPLATE.replace(
-        '{{ submission.id }}', submission.id
+        '{{ submission.id }}', str(submission.id or '')
     ).replace(
-        '{{ submission.status.title() }}', submission.status.title()
+        '{{ submission.status.title() }}', str(submission.status.title() or '')
     ).replace(
-        '{{ submission.title }}', submission.title
+        '{{ submission.title }}', str(submission.title or '')
     ).replace(
-        '{{ submission.authors | join(\', \') }}', ', '.join(submission.authors)
+        '{{ submission.authors | join(\', \') }}', str(', '.join(submission.authors) or '')
     ).replace(
-        '{{ submission.draft_name }}', getattr(submission, 'draft_name', submission.id)
+        '{{ submission.draft_name }}', str(getattr(submission, 'draft_name', submission.id) or '')
     ).replace(
-        '{{ submission.submitted_at }}', submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S')
+        '{{ submission.submitted_at }}', str(submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if submission.submitted_at else '')
     ).replace(
-        '{{ submission.filename }}', submission.filename
+        '{{ submission.filename }}', str(submission.filename or '')
     ).replace(
-        '{{ file_content }}', file_content
+        '{{ file_content }}', str(file_content or '')
     ).replace(
-        '{{ submission.approved_at }}', submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else ''
+        '{{ submission.approved_at }}', str(submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else '')
     ).replace(
-        '{{ submission.rejected_at }}', submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else ''
+        '{{ submission.rejected_at }}', str(submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else '')
     )
 
     # Add current user context for admin actions
@@ -3249,7 +3249,29 @@ def all_documents():
 
 @app.route('/doc/draft/<draft_name>/')
 def draft_detail(draft_name):
+    # First try to find in DRAFTS (published documents)
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+
+    # If not found in DRAFTS, try to find as a submission ID
+    if not draft:
+        from ietf_data_viewer_simple import Submission
+        submission = Submission.query.filter_by(id=draft_name).first()
+        if submission:
+            # Create a draft-like object from the submission
+            draft = {
+                'name': submission.id,
+                'title': submission.title,
+                'authors': submission.authors,
+                'abstract': submission.abstract or 'Abstract not available for this draft.',
+                'status': submission.status,
+                'group': submission.group,
+                'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+                'rev': '00',  # Default revision for submissions
+                'pages': 1,   # Default pages for submissions
+                'words': 0,   # Default words for submissions
+                'stream': 'ietf'  # Default stream
+            }
+
     if not draft:
         return "Document not found", 404
     
