@@ -33,6 +33,10 @@ def init_db():
     with app.app_context():
         db.create_all()
 
+        # Migrate hardcoded users to database if not already done
+        if User.query.count() == 0:
+            migrate_hardcoded_users()
+
         # Load published drafts from database into memory
         published_drafts = PublishedDraft.query.all()
         for draft in published_drafts:
@@ -51,7 +55,32 @@ def init_db():
             }
             DRAFTS.append(draft_entry)
 
-        print(f"Database initialized: {len(published_drafts)} published drafts loaded")
+        print(f"Database initialized: {User.query.count()} users, {len(published_drafts)} published drafts loaded")
+
+def migrate_hardcoded_users():
+    """Migrate hardcoded users to database"""
+    hardcoded_users = {
+        'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'light'},
+        'daveed': {'password': 'admin123', 'name': 'Daveed', 'email': 'daveed@bridgit.io', 'role': 'admin', 'theme': 'light'},
+        'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'light'},
+        'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'light'},
+        'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com', 'role': 'editor', 'theme': 'dark'}
+    }
+
+    for username, user_data in hardcoded_users.items():
+        if not User.query.filter_by(username=username).first():
+            user = User(
+                username=username,
+                password_hash=generate_password_hash(user_data['password']),
+                name=user_data['name'],
+                email=user_data['email'],
+                role=user_data.get('role', 'user'),
+                theme=user_data.get('theme', 'light')
+            )
+            db.session.add(user)
+
+    db.session.commit()
+    print(f"Migrated {len(hardcoded_users)} hardcoded users to database")
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'  # For flash messages
@@ -119,6 +148,17 @@ class WorkingGroupMember(db.Model):
     user_name = db.Column(db.String(100), index=True)
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, index=True)
+    password_hash = db.Column(db.String(255))
+    name = db.Column(db.String(100))
+    email = db.Column(db.String(100), unique=True, index=True)
+    role = db.Column(db.String(20), default='user')  # admin, editor, user
+    theme = db.Column(db.String(10), default='light')  # light, dark, auto
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login = db.Column(db.DateTime, nullable=True)
+
 class WorkingGroupChair(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     group_acronym = db.Column(db.String(50), unique=True, index=True)
@@ -126,13 +166,7 @@ class WorkingGroupChair(db.Model):
     approved = db.Column(db.Boolean, default=False)
     set_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Store users in memory (in a real app, this would be a database)
-USERS = {
-    'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'light'},
-    'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'light'},
-    'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'light'},
-    'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com', 'role': 'editor', 'theme': 'dark'}
-}
+# Users are now stored in database - this dict is kept for backward compatibility during migration
 
 # Store document history in memory
 DOCUMENT_HISTORY = {}
@@ -200,7 +234,15 @@ def require_role(required_role):
 def get_current_user():
     """Get current logged in user"""
     if 'user' in session:
-        return USERS.get(session['user'])
+        user = User.query.filter_by(username=session['user']).first()
+        if user:
+            return {
+                'username': user.username,
+                'name': user.name,
+                'email': user.email,
+                'role': user.role,
+                'theme': user.theme
+            }
     return None
 
 def generate_user_menu():
@@ -899,9 +941,9 @@ BASE_TEMPLATE = """
             background: var(--border-hover);
         }}
 
-        /* Dropdown menu z-index fix - very high to ensure it's above everything */
+        /* Dropdown menu z-index fix - extremely high to ensure it's above everything */
         .dropdown-menu {{
-            z-index: 9999;
+            z-index: 10000;
             border-radius: 12px;
             border: 1px solid var(--border-color);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -1520,12 +1562,16 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-        
-        if username in USERS and USERS[username]['password'] == password:
+
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password_hash, password):
             session['user'] = username
             # Set user's preferred theme in session
-            session['theme'] = USERS[username].get('theme', 'light')
-            flash(f'Welcome back, {USERS[username]["name"]}!', 'success')
+            session['theme'] = user.theme
+            # Update last login
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+            flash(f'Welcome back, {user.name}!', 'success')
             return redirect(url_for('home'))
         else:
             flash('Invalid username or password.', 'error')
@@ -1553,17 +1599,29 @@ def register():
         password = request.form.get('password', '').strip()
         name = request.form.get('name', '').strip()
         email = request.form.get('email', '').strip()
-        
-        if username in USERS:
-            flash('Username already exists.', 'error')
+
+        # Check if username or email already exists
+        existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
+        if existing_user:
+            if existing_user.username == username:
+                flash('Username already exists.', 'error')
+            else:
+                flash('Email already registered.', 'error')
         elif len(password) < 6:
             flash('Password must be at least 6 characters.', 'error')
         else:
-            USERS[username] = {
-                'password': password,
-                'name': name,
-                'email': email
-            }
+            # Create new user in database
+            new_user = User(
+                username=username,
+                password_hash=generate_password_hash(password),
+                name=name,
+                email=email,
+                role='user',  # Default role
+                theme='light'  # Default theme
+            )
+            db.session.add(new_user)
+            db.session.commit()
+
             session['user'] = username
             flash(f'Account created successfully! Welcome, {name}!', 'success')
             return redirect(url_for('home'))
@@ -1584,33 +1642,43 @@ def profile():
     
     if request.method == 'POST':
         action = request.form.get('action')
+        user = User.query.filter_by(username=session['user']).first()
+
         if action == 'update_password':
             old_password = request.form.get('old_password', '').strip()
             new_password = request.form.get('new_password', '').strip()
-            
-            if USERS[session['user']]['password'] == old_password:
+
+            if check_password_hash(user.password_hash, old_password):
                 if len(new_password) >= 6:
-                    USERS[session['user']]['password'] = new_password
+                    user.password_hash = generate_password_hash(new_password)
+                    db.session.commit()
                     flash('Password updated successfully!', 'success')
                 else:
                     flash('New password must be at least 6 characters.', 'error')
             else:
                 flash('Current password is incorrect.', 'error')
-        
+
         elif action == 'update_profile':
             name = request.form.get('name', '').strip()
             email = request.form.get('email', '').strip()
 
-            if name:
-                USERS[session['user']]['name'] = name
-            if email:
-                USERS[session['user']]['email'] = email
-            flash('Profile updated successfully!', 'success')
+            # Check if email is already taken by another user
+            existing_email = User.query.filter(User.email == email, User.username != session['user']).first()
+            if existing_email:
+                flash('Email already registered to another account.', 'error')
+            else:
+                if name:
+                    user.name = name
+                if email:
+                    user.email = email
+                db.session.commit()
+                flash('Profile updated successfully!', 'success')
 
         elif action == 'update_theme':
             theme = request.form.get('theme', 'light').strip()
             if theme in ['light', 'dark', 'auto']:
-                USERS[session['user']]['theme'] = theme
+                user.theme = theme
+                db.session.commit()
                 session['theme'] = theme  # Update session immediately
                 flash('Theme preference updated successfully!', 'success')
             else:
@@ -1641,7 +1709,7 @@ def admin_dashboard():
     user_menu = generate_user_menu()
 
     # Get admin statistics
-    total_users = len(USERS)
+    total_users = User.query.count()
     total_groups = len(GROUPS)
     total_submissions = Submission.query.count()
     approved_drafts = PublishedDraft.query.count()
