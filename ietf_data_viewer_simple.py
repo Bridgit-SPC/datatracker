@@ -577,7 +577,7 @@ GROUPS = load_group_data()
 # HTML Templates
 BASE_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{theme}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1053,8 +1053,9 @@ BASE_TEMPLATE = """
         const icon = themeToggle.querySelector('i');
 
         // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        const userTheme = html.getAttribute('data-theme') || 'light';
+        const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
+            (localStorage.getItem('theme') || 'light') : userTheme;
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -1609,7 +1610,7 @@ def login():
         <a class="nav-link" href="/register/">Register</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Login - MLTF", user_menu=user_menu, content=LOGIN_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Login - MLTF", theme="light", user_menu=user_menu, content=LOGIN_TEMPLATE))
 
 @app.route('/logout/')
 def logout():
@@ -1659,7 +1660,7 @@ def register():
         <a class="nav-link" href="/login/">Sign In</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF", user_menu=user_menu, content=REGISTER_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF", theme="light", user_menu=user_menu, content=REGISTER_TEMPLATE))
 
 @app.route('/profile/', methods=['GET', 'POST'])
 @require_auth
@@ -1728,7 +1729,7 @@ def profile():
         auto_selected=auto_selected,
         session_user=session['user']
     )
-    return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF", user_menu=user_menu, content=profile_content))
+    return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF", theme=current_theme, user_menu=user_menu, content=profile_content))
 
 @app.route('/admin/')
 @require_role('admin')
@@ -1814,6 +1815,7 @@ def admin_dashboard():
 
     return BASE_TEMPLATE.format(
         title="Admin Dashboard - MLTF",
+        theme=get_current_user().get('theme', 'light'),
         content=content,
         user_menu=user_menu
     )
@@ -1823,6 +1825,8 @@ def admin_dashboard():
 def home():
     # Generate user menu
     current_user = get_current_user()
+    current_theme = current_user.get('theme', 'light') if current_user else 'light'
+
     if current_user:
         user_role = current_user.get('role', 'user')
         is_admin = user_role in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']
@@ -1851,7 +1855,7 @@ def home():
         </div>
         """
     
-    return BASE_TEMPLATE.format(title="MLTF", user_menu=user_menu, content=f"""
+    return BASE_TEMPLATE.format(title="MLTF", theme=current_theme, user_menu=user_menu, content=f"""
     
     <div class="container mt-4">
         <div class="row">
@@ -2023,8 +2027,9 @@ def all_documents():
         const icon = themeToggle.querySelector('i');
 
         // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        const userTheme = html.getAttribute('data-theme') || 'light';
+        const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
+            (localStorage.getItem('theme') || 'light') : userTheme;
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -2182,8 +2187,9 @@ def draft_detail(draft_name):
         const icon = themeToggle.querySelector('i');
 
         // Load saved theme - prefer user preference over localStorage
-        const userTheme = '{{ session.get("theme", "light") }}';
-        const savedTheme = userTheme !== 'None' ? userTheme : (localStorage.getItem('theme') || 'light');
+        const userTheme = html.getAttribute('data-theme') || 'light';
+        const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
+            (localStorage.getItem('theme') || 'light') : userTheme;
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -2222,6 +2228,7 @@ def draft_detail(draft_name):
 @app.route('/group/')
 def groups():
     user_menu = generate_user_menu()
+    current_theme = get_current_user().get('theme', 'light') if get_current_user() else 'light'
     groups_html = ""
     for group in GROUPS:
         # Get chair information from database
@@ -2276,6 +2283,7 @@ def groups():
 
     return BASE_TEMPLATE.format(
         title="Working Groups - MLTF",
+        theme=current_theme,
         content=content,
         user_menu=user_menu
     )
@@ -2491,6 +2499,7 @@ def group_detail(acronym):
 
     return BASE_TEMPLATE.format(
         title=f"{group['name']} - MLTF",
+        theme=current_theme,
         content=content,
         user_menu=user_menu
     )
@@ -2613,6 +2622,7 @@ def people():
 
     return BASE_TEMPLATE.format(
         title="People Directory - MLTF",
+        theme=session.get('theme', 'light'),
         content=content,
         user_menu=user_menu
     )
@@ -2641,6 +2651,7 @@ def meetings():
 
     return BASE_TEMPLATE.format(
         title="Meetings - MLTF",
+        theme=session.get('theme', 'light'),
         content=content,
         user_menu=user_menu
     )
