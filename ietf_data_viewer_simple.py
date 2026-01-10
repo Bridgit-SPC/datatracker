@@ -1434,16 +1434,16 @@ SUBMISSION_STATUS_TEMPLATE = """
                         </div>
                         {% else %}
                         <div class="timeline-item">
-                            <div class="timeline-marker bg-light"></div>
+                            <div class="timeline-marker bg-secondary"></div>
                             <div class="timeline-content">
-                                <h6>• Working Group Review</h6>
+                                <h6>Working Group Review</h6>
                                 <p class="text-muted small">Pending initial approval</p>
                             </div>
                         </div>
                         <div class="timeline-item">
-                            <div class="timeline-marker bg-light"></div>
+                            <div class="timeline-marker bg-secondary"></div>
                             <div class="timeline-content">
-                                <h6>• MLSG Review</h6>
+                                <h6>MLSG Review</h6>
                                 <p class="text-muted small">Pending working group review</p>
                             </div>
                         </div>
@@ -1464,7 +1464,7 @@ SUBMISSION_STATUS_TEMPLATE = """
                     <a href="/" class="btn btn-outline-secondary w-100">Back to Home</a>
                 </div>
             </div>
-            
+
             <div class="card mt-3">
                 <div class="card-header">
                     <h5>Need Help?</h5>
@@ -3505,7 +3505,7 @@ Meta-Layer Initiative
                         </div>
                     </div>
                     <div class="card-body">
-                        <div class="document-content" style="font-family: 'Courier New', monospace; font-size: 0.9em; line-height: 1.4; white-space: pre-wrap; background-color: var(--input-bg); color: var(--text-primary); padding: 20px; border-radius: 8px; max-height: 800px; overflow-y: auto;">
+                        <div class="document-content" style="font-family: 'Courier New', monospace; font-size: 0.9em; line-height: 1.4; white-space: pre-wrap; background-color: var(--input-bg) !important; color: var(--text-primary) !important; padding: 20px; border-radius: 8px; max-height: 800px; overflow-y: auto; border: 1px solid var(--input-border);">
 {document_content}
                         </div>
                     </div>
