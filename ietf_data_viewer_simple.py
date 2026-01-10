@@ -60,10 +60,10 @@ def init_db():
 def migrate_hardcoded_users():
     """Migrate hardcoded users to database"""
     hardcoded_users = {
-        'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'light'},
-        'daveed': {'password': 'admin123', 'name': 'Daveed', 'email': 'daveed@bridgit.io', 'role': 'admin', 'theme': 'light'},
-        'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'light'},
-        'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'light'},
+        'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'dark'},
+        'daveed': {'password': 'admin123', 'name': 'Daveed', 'email': 'daveed@bridgit.io', 'role': 'admin', 'theme': 'dark'},
+        'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'dark'},
+        'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'dark'},
         'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com', 'role': 'editor', 'theme': 'dark'}
     }
 
@@ -75,7 +75,7 @@ def migrate_hardcoded_users():
                 name=user_data['name'],
                 email=user_data['email'],
                 role=user_data.get('role', 'user'),
-                theme=user_data.get('theme', 'light')
+                theme=user_data.get('theme', 'dark')
             )
             db.session.add(user)
 
@@ -155,7 +155,7 @@ class User(db.Model):
     name = db.Column(db.String(100))
     email = db.Column(db.String(100), unique=True, index=True)
     role = db.Column(db.String(20), default='user')  # admin, editor, user
-    theme = db.Column(db.String(10), default='light')  # light, dark, auto
+    theme = db.Column(db.String(10), default='dark')  # light, dark, auto
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
 
@@ -1053,9 +1053,9 @@ BASE_TEMPLATE = """
         const icon = themeToggle.querySelector('i');
 
         // Load saved theme - prefer user preference over localStorage
-        const userTheme = html.getAttribute('data-theme') || 'light';
+        const userTheme = html.getAttribute('data-theme') || 'dark';
         const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
-            (localStorage.getItem('theme') || 'light') : userTheme;
+            (localStorage.getItem('theme') || 'dark') : userTheme;
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -1645,7 +1645,7 @@ def register():
                 name=name,
                 email=email,
                 role='user',  # Default role
-                theme='light'  # Default theme
+                theme='dark'  # Default theme
             )
             db.session.add(new_user)
             db.session.commit()
@@ -1703,7 +1703,7 @@ def profile():
                 flash('Profile updated successfully!', 'success')
 
         elif action == 'update_theme':
-            theme = request.form.get('theme', 'light').strip()
+            theme = request.form.get('theme', 'dark').strip()
             if theme in ['light', 'dark', 'auto']:
                 user.theme = theme
                 db.session.commit()
@@ -1715,7 +1715,7 @@ def profile():
     # Generate user menu
     user_menu = generate_user_menu()
     
-    current_theme = current_user.get('theme', 'light')
+    current_theme = current_user.get('theme', 'dark')
     light_selected = 'selected' if current_theme == 'light' else ''
     dark_selected = 'selected' if current_theme == 'dark' else ''
     auto_selected = 'selected' if current_theme == 'auto' else ''
@@ -1815,7 +1815,7 @@ def admin_dashboard():
 
     return BASE_TEMPLATE.format(
         title="Admin Dashboard - MLTF",
-        theme=get_current_user().get('theme', 'light'),
+        theme=get_current_user().get('theme', 'dark'),
         content=content,
         user_menu=user_menu
     )
@@ -1825,7 +1825,7 @@ def admin_dashboard():
 def home():
     # Generate user menu
     current_user = get_current_user()
-    current_theme = current_user.get('theme', 'light') if current_user else 'light'
+    current_theme = current_user.get('theme', 'dark') if current_user else 'light'
 
     if current_user:
         user_role = current_user.get('role', 'user')
@@ -2027,9 +2027,9 @@ def all_documents():
         const icon = themeToggle.querySelector('i');
 
         // Load saved theme - prefer user preference over localStorage
-        const userTheme = html.getAttribute('data-theme') || 'light';
+        const userTheme = html.getAttribute('data-theme') || 'dark';
         const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
-            (localStorage.getItem('theme') || 'light') : userTheme;
+            (localStorage.getItem('theme') || 'dark') : userTheme;
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -2187,9 +2187,9 @@ def draft_detail(draft_name):
         const icon = themeToggle.querySelector('i');
 
         // Load saved theme - prefer user preference over localStorage
-        const userTheme = html.getAttribute('data-theme') || 'light';
+        const userTheme = html.getAttribute('data-theme') || 'dark';
         const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
-            (localStorage.getItem('theme') || 'light') : userTheme;
+            (localStorage.getItem('theme') || 'dark') : userTheme;
         html.setAttribute('data-theme', savedTheme);
         updateThemeIcon(savedTheme);
 
@@ -2228,7 +2228,7 @@ def draft_detail(draft_name):
 @app.route('/group/')
 def groups():
     user_menu = generate_user_menu()
-    current_theme = get_current_user().get('theme', 'light') if get_current_user() else 'light'
+    current_theme = get_current_user().get('theme', 'dark') if get_current_user() else 'light'
     groups_html = ""
     for group in GROUPS:
         # Get chair information from database
@@ -2264,7 +2264,7 @@ def groups():
         """
 
     # Get theme from session or user preference
-    current_theme = session.get('theme', 'light')
+    current_theme = session.get('theme', 'dark')
 
     content = f"""
     <div class="container mt-4">
@@ -2350,7 +2350,7 @@ def group_detail(acronym):
         '''
 
     # Get theme from session or user preference
-    current_theme = session.get('theme', current_user.get('theme', 'light') if current_user else 'light')
+    current_theme = session.get('theme', current_user.get('theme', 'dark') if current_user else 'dark')
 
     content = f"""
     <div class="container mt-4">
@@ -2602,7 +2602,7 @@ def remove_group_chair(acronym):
 def people():
     """People directory - coming soon"""
     user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'light')
+    current_theme = session.get('theme', 'dark')
 
     content = """
     <div class="container mt-4">
@@ -2622,7 +2622,7 @@ def people():
 
     return BASE_TEMPLATE.format(
         title="People Directory - MLTF",
-        theme=session.get('theme', 'light'),
+        theme=session.get('theme', 'dark'),
         content=content,
         user_menu=user_menu
     )
@@ -2631,7 +2631,7 @@ def people():
 def meetings():
     """Meetings - coming soon"""
     user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'light')
+    current_theme = session.get('theme', 'dark')
 
     content = """
     <div class="container mt-4">
@@ -2651,7 +2651,7 @@ def meetings():
 
     return BASE_TEMPLATE.format(
         title="Meetings - MLTF",
-        theme=session.get('theme', 'light'),
+        theme=session.get('theme', 'dark'),
         content=content,
         user_menu=user_menu
     )
