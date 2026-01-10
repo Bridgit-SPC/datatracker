@@ -1241,6 +1241,22 @@ def submit_draft():
     user_menu = generate_user_menu()
     current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
 
+    # Generate working group options dynamically
+    group_options = '<option value="">Select a Working Group</option>'
+    for group in GROUPS:
+        group_options += f'<option value="{group["acronym"]}">{group["name"]}</option>'
+
+    # Replace the hardcoded options in the template
+    submit_template = SUBMIT_TEMPLATE.replace(
+        '''<option value="">Select a Working Group</option>
+                                <option value="httpbis">HTTP</option>
+                                <option value="quic">QUIC</option>
+                                <option value="tls">TLS</option>
+                                <option value="dnsop">DNSOP</option>
+                                <option value="rtgwg">RTGWG</option>''',
+        group_options
+    )
+
     if request.method == 'POST':
         # Handle form submission
         title = request.form.get('title', '').strip()
@@ -1252,7 +1268,7 @@ def submit_draft():
         # Validation
         if not title or not authors or not file:
             flash('Title, authors, and file are required', 'error')
-            return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=SUBMIT_TEMPLATE)
+            return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=submit_template)
 
         # Process authors (comma-separated)
         authors_list = [a.strip() for a in authors.split(',') if a.strip()]
@@ -1288,7 +1304,7 @@ def submit_draft():
         flash('Draft submitted successfully!', 'success')
         return redirect(f'/submit/status/')
 
-    return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=SUBMIT_TEMPLATE)
+    return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=submit_template)
 
 SUBMISSION_STATUS_TEMPLATE = """
 <div class="container mt-4">
