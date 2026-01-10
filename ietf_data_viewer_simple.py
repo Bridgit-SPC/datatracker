@@ -161,7 +161,7 @@ class User(db.Model):
 
 class WorkingGroupChair(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    group_acronym = db.Column(db.String(50), unique=True, index=True)
+    group_acronym = db.Column(db.String(50), index=True)  # Remove unique constraint to allow multiple chairs
     chair_name = db.Column(db.String(100))
     approved = db.Column(db.Boolean, default=False)
     set_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1203,6 +1203,61 @@ SUBMIT_TEMPLATE = """
 </div>
 """
 
+@app.route('/submit/', methods=['GET', 'POST'])
+@require_auth
+def submit_draft():
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
+
+    if request.method == 'POST':
+        # Handle form submission
+        title = request.form.get('title', '').strip()
+        authors = request.form.get('authors', '').strip()
+        abstract = request.form.get('abstract', '').strip()
+        group = request.form.get('group', '').strip()
+        file = request.files.get('file')
+
+        # Validation
+        if not title or not authors or not file:
+            flash('Title, authors, and file are required', 'error')
+            return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=SUBMIT_TEMPLATE)
+
+        # Process authors (comma-separated)
+        authors_list = [a.strip() for a in authors.split(',') if a.strip()]
+
+        # Generate submission ID (simple increment)
+        import random
+        import string
+        submission_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
+        # Save file
+        filename = f"{submission_id}-{file.filename}"
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(file_path)
+
+        # Create submission record
+        submission = Submission(
+            id=submission_id,
+            title=title,
+            authors=authors_list,
+            abstract=abstract,
+            group=group,
+            filename=filename,
+            file_path=file_path,
+            submitted_by=get_current_user()['name']
+        )
+
+        db.session.add(submission)
+        db.session.commit()
+
+        # Log the action
+        add_to_document_history(f"draft-{submission_id}", "submitted", get_current_user()['name'], f"New draft submitted: {title}")
+
+        flash('Draft submitted successfully!', 'success')
+        return redirect(f'/submit/status/')
+
+    return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=SUBMIT_TEMPLATE)
+
 SUBMISSION_STATUS_TEMPLATE = """
 <div class="container mt-4">
     <nav aria-label="breadcrumb">
@@ -1417,6 +1472,73 @@ SUBMISSION_STATUS_TEMPLATE = """
 }
 </style>
 """
+
+@app.route('/submit/status/')
+@require_auth
+def submission_status():
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
+
+    # Get user's submissions
+    user_name = get_current_user()['name']
+    submissions = Submission.query.filter_by(submitted_by=user_name).order_by(Submission.submitted_at.desc()).all()
+
+    # Format submissions for template
+    submissions_html = ""
+    for submission in submissions:
+        status_badge = {
+            'submitted': 'badge bg-warning',
+            'approved': 'badge bg-success',
+            'rejected': 'badge bg-danger'
+        }.get(submission.status, 'badge bg-secondary')
+
+        submissions_html += f"""
+        <div class="submission-item">
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0">{submission.title}</h6>
+                    <span class="{status_badge}">{submission.status.title()}</span>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <p class="mb-2"><strong>Authors:</strong> {', '.join(submission.authors)}</p>
+                            <p class="mb-2"><strong>Group:</strong> {submission.group or 'None'}</p>
+                            <p class="mb-2"><strong>Submitted:</strong> {submission.submitted_at.strftime('%Y-%m-%d %H:%M')}</p>
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <a href="/doc/draft/{submission.id}/" class="btn btn-sm btn-outline-primary">View Draft</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+
+    content = f"""
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
+                <li class="breadcrumb-item"><a href="/submit/">Submit Draft</a></li>
+                <li class="breadcrumb-item active">Submission Status</li>
+            </ol>
+        </nav>
+
+        <h1>My Submissions</h1>
+
+        {f'<div class="alert alert-info">You have {len(submissions)} submission(s).</div>' if submissions else '<div class="alert alert-info">You have no submissions yet.</div>'}
+
+        {submissions_html}
+
+        <div class="mt-4">
+            <a href="/submit/" class="btn btn-primary">Submit Another Draft</a>
+            <a href="/" class="btn btn-secondary ms-2">Back to Home</a>
+        </div>
+    </div>
+    """
+
+    return BASE_TEMPLATE.format(title="Submission Status - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
 LOGIN_TEMPLATE = """
 <div class="container mt-4">
@@ -1937,6 +2059,7 @@ def active_documents():
 @app.route('/doc/all/')
 def all_documents():
     user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'dark')
     docs_html = ""
     for draft in DRAFTS:
         docs_html += f"""
@@ -1969,101 +2092,19 @@ def all_documents():
             </div>
         </div>
         """
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>All Documents - MLTF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand {{ font-weight: bold; }}
-        .document-card {{ margin-bottom: 1rem; }}
-        .document-title {{ font-weight: bold; color: #0066cc; }}
-        .document-meta {{ font-size: 0.9em; color: #666; }}
-        .status-badge {{ font-size: 0.8em; }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-        </div>
-    </nav>
-    
+
+    content = f"""
     <div class="container mt-4">
         <h1>All Documents</h1>
         <p>Showing {len(DRAFTS)} documents</p>
-        
+
         <div class="row">
             {docs_html}
         </div>
     </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
+    """
 
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = html.getAttribute('data-theme') || 'dark';
-        const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
-            (localStorage.getItem('theme') || 'dark') : userTheme;
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
+    return BASE_TEMPLATE.format(title="All Documents - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
 @app.route('/doc/draft/<draft_name>/')
 def draft_detail(draft_name):
@@ -2071,46 +2112,9 @@ def draft_detail(draft_name):
     if not draft:
         return "Document not found", 404
     
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{draft['name']} - MLTF Datatracker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .navbar-brand {{ font-weight: bold; }}
-        .document-card {{ margin-bottom: 1rem; }}
-        .document-title {{ font-weight: bold; color: #0066cc; }}
-        .document-meta {{ font-size: 0.9em; color: #666; }}
-        .status-badge {{ font-size: 0.8em; }}
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
-            <a class="navbar-brand" href="/">MLTF</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
-            </div>
-        </div>
-    </nav>
-    
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', 'dark')
+    content = f"""
     <div class="container mt-4">
         <h1>{draft['name']}</h1>
         <p class="lead">{draft['title']}</p>
@@ -2135,25 +2139,17 @@ def draft_detail(draft_name):
                         </table>
                     </div>
                 </div>
-                
+
                 <div class="card mt-3">
                     <div class="card-header">
-                        <h5>Document Content</h5>
+                        <h5>Abstract</h5>
                     </div>
                     <div class="card-body">
-                        <p>This is a sample IETF document. In the real datatracker, this would contain the actual document content, including:</p>
-                        <ul>
-                            <li>Abstract</li>
-                            <li>Introduction</li>
-                            <li>Technical specifications</li>
-                            <li>References</li>
-                            <li>Author information</li>
-                        </ul>
-                        <p><strong>Abstract:</strong> This document describes the sample MLTF draft {draft['name']}. It provides a framework for understanding how MLTF documents are structured and managed within the datatracker system.</p>
+                        <p>{draft.get('abstract', 'Abstract not available for this draft.')}</p>
                     </div>
                 </div>
             </div>
-            
+
             <div class="col-md-4">
                 <div class="card">
                     <div class="card-header">
@@ -2166,7 +2162,7 @@ def draft_detail(draft_name):
                         <a href="/doc/draft/{draft['name']}/" class="btn btn-outline-primary w-100">Download PDF</a>
                     </div>
                 </div>
-                
+
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Related Documents</h5>
@@ -2178,52 +2174,9 @@ def draft_detail(draft_name):
             </div>
         </div>
     </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
+    """
 
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = html.getAttribute('data-theme') || 'dark';
-        const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
-            (localStorage.getItem('theme') || 'dark') : userTheme;
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
-</body>
-</html>
-"""
+    return BASE_TEMPLATE.format(title=f"{draft['name']} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
 @app.route('/group/')
 def groups():
@@ -2232,11 +2185,15 @@ def groups():
     groups_html = ""
     for group in GROUPS:
         # Get chair information from database
-        chair_info = WorkingGroupChair.query.filter_by(group_acronym=group['acronym']).first()
-        if chair_info:
-            chair_display = chair_info.chair_name
-            if not chair_info.approved:
-                chair_display += " (Pending Approval)"
+        all_chairs = WorkingGroupChair.query.filter_by(group_acronym=group['acronym']).all()
+        if all_chairs:
+            chair_names = []
+            for chair in all_chairs:
+                chair_name = chair.chair_name
+                if not chair.approved:
+                    chair_name += " (Pending)"
+                chair_names.append(chair_name)
+            chair_display = ", ".join(chair_names)
         else:
             chair_display = "TBD"
 
@@ -2321,9 +2278,21 @@ def group_detail(acronym):
         is_member = membership is not None
 
     # Get chair information using the full acronym
-    chair_info = WorkingGroupChair.query.filter_by(group_acronym=full_acronym).first()
-    chair_name = chair_info.chair_name if chair_info else "TBD"
-    chair_approved = chair_info.approved if chair_info else False
+    all_chairs = WorkingGroupChair.query.filter_by(group_acronym=full_acronym).all()
+    if all_chairs:
+        approved_chairs = [chair.chair_name for chair in all_chairs if chair.approved]
+        pending_chairs = [chair.chair_name for chair in all_chairs if not chair.approved]
+
+        if approved_chairs:
+            chair_name = ", ".join(approved_chairs)
+            if pending_chairs:
+                chair_name += f" (Pending: {', '.join(pending_chairs)})"
+        else:
+            chair_name = f"Pending: {', '.join(pending_chairs)}"
+        chair_approved = len(approved_chairs) > 0
+    else:
+        chair_name = "TBD"
+        chair_approved = False
 
     join_button = ""
     if current_user and not is_member:
@@ -2334,18 +2303,41 @@ def group_detail(acronym):
     # Admin chair management
     chair_management = ""
     if current_user and current_user.get('role') == 'admin':
-        current_chair = chair_info.chair_name if chair_info else ""
-        approve_button = f'<button class="btn btn-success btn-sm ms-2" onclick="approveChair(\\"{full_acronym}\\")">Approve Chair</button>' if chair_info and not chair_info.approved else ''
-        remove_button = f'<button class="btn btn-danger btn-sm ms-2" onclick="removeChair(\\"{full_acronym}\\")">Remove Chair</button>' if chair_info else ''
+        # Get all chairs for this group
+        all_chairs = WorkingGroupChair.query.filter_by(group_acronym=full_acronym).all()
+
+        # Create options for the multi-select dropdown
+        chair_options = ""
+        selected_chairs = []
+        for chair in all_chairs:
+            chair_display = chair.chair_name
+            if not chair.approved:
+                chair_display += " (Pending)"
+            chair_options += f'<option value="{chair.id}" {"selected" if chair.approved else ""}>{chair_display}</option>'
+            if chair.approved:
+                selected_chairs.append(chair.chair_name)
+
+        # Convert selected chairs to JSON for JavaScript
+        selected_chairs_json = json.dumps(selected_chairs)
+
         chair_management = f'''
         <div class="mt-4 p-3 border rounded">
             <h5>Chair Management</h5>
-            <form method="POST" action="/group/{full_acronym}/set_chair" class="d-flex gap-2">
-                <input type="text" name="chair_name" class="form-control" placeholder="Chair name" value="{current_chair}">
-                <button type="submit" class="btn btn-warning">Set Chair</button>
-            </form>
-            {approve_button}
-            {remove_button}
+            <div class="mb-3">
+                <label class="form-label">Current Chairs:</label>
+                <select multiple class="form-select" id="chair-select-{full_acronym}" size="4">
+                    {chair_options}
+                </select>
+                <div class="form-text">Select multiple chairs using Ctrl+Click (Cmd+Click on Mac)</div>
+            </div>
+            <div class="d-flex gap-2">
+                <input type="text" id="new-chair-input-{full_acronym}" class="form-control" placeholder="Add new chair name">
+                <button type="button" class="btn btn-success" onclick="addChair('{full_acronym}')">Add Chair</button>
+                <button type="button" class="btn btn-warning" onclick="updateChairs('{full_acronym}')">Update Chairs</button>
+            </div>
+            <div class="mt-2">
+                <small class="text-muted">Current approved chairs: {", ".join(selected_chairs) if selected_chairs else "None"}</small>
+            </div>
         </div>
         '''
 
@@ -2451,46 +2443,91 @@ def group_detail(acronym):
         }});
     }}
 
-    function approveChair(acronym) {{
-        fetch(`/group/${{acronym}}/approve_chair`, {{
+    function addChair(acronym) {{
+        const input = document.getElementById(`new-chair-input-${{acronym}}`);
+        const chairName = input.value.trim();
+        if (!chairName) {{
+            alert('Please enter a chair name');
+            return;
+        }}
+
+        fetch(`/group/${{acronym}}/add_chair`, {{
             method: 'POST',
             headers: {{
                 'Content-Type': 'application/json',
-            }}
+            }},
+            body: JSON.stringify({{ chair_name: chairName }})
         }})
         .then(response => response.json())
         .then(data => {{
             if (data.success) {{
                 location.reload();
             }} else {{
-                alert('Error approving chair: ' + data.message);
+                alert('Error adding chair: ' + data.message);
             }}
         }})
         .catch(error => {{
             console.error('Error:', error);
-            alert('Error approving chair');
+            alert('Error adding chair');
+        }});
+    }}
+
+    function updateChairs(acronym) {{
+        const select = document.getElementById(`chair-select-${{acronym}}`);
+        const selectedOptions = Array.from(select.selectedOptions);
+        const chairIds = selectedOptions.map(option => parseInt(option.value));
+
+        fetch(`/group/${{acronym}}/update_chairs`, {{
+            method: 'POST',
+            headers: {{
+                'Content-Type': 'application/json',
+            }},
+            body: JSON.stringify({{ chair_ids: chairIds }})
+        }})
+        .then(response => response.json())
+        .then(data => {{
+            if (data.success) {{
+                location.reload();
+            }} else {{
+                alert('Error updating chairs: ' + data.message);
+            }}
+        }})
+        .catch(error => {{
+            console.error('Error:', error);
+            alert('Error updating chairs');
         }});
     }}
 
     function removeChair(acronym) {{
-        if (confirm('Are you sure you want to remove the chair?')) {{
-            fetch(`/group/${{acronym}}/remove_chair`, {{
+        const select = document.getElementById(`chair-select-${{acronym}}`);
+        const selectedOptions = Array.from(select.selectedOptions);
+
+        if (selectedOptions.length === 0) {{
+            alert('Please select chairs to remove');
+            return;
+        }}
+
+        if (confirm('Are you sure you want to remove ' + selectedOptions.length + ' chair(s)?')) {{
+            const chairIds = selectedOptions.map(option => parseInt(option.value));
+
+            fetch(`/group/${{acronym}}/remove_chairs`, {{
                 method: 'POST',
                 headers: {{
                     'Content-Type': 'application/json',
-                }}
+                }},
+                body: JSON.stringify({{ chair_ids: chairIds }})
             }})
             .then(response => response.json())
             .then(data => {{
                 if (data.success) {{
                     location.reload();
                 }} else {{
-                    alert('Error removing chair: ' + data.message);
+                    alert('Error removing chairs: ' + data.message);
                 }}
             }})
             .catch(error => {{
                 console.error('Error:', error);
-                alert('Error removing chair');
+                alert('Error removing chairs');
             }});
         }}
     }}
@@ -2551,17 +2588,18 @@ def leave_group(acronym):
 
     return jsonify({'success': True, 'message': 'Left successfully'})
 
-@app.route('/group/<acronym>/set_chair', methods=['POST'])
+@app.route('/group/<acronym>/add_chair', methods=['POST'])
 @require_role('admin')
-def set_group_chair(acronym):
-    chair_name = request.form.get('chair_name', '').strip()
+def add_group_chair(acronym):
+    data = request.get_json()
+    chair_name = data.get('chair_name', '').strip()
     if not chair_name:
         return jsonify({'success': False, 'message': 'Chair name required'}), 400
 
-    # Remove existing chair if any
-    existing = WorkingGroupChair.query.filter_by(group_acronym=acronym).first()
+    # Check if chair already exists
+    existing = WorkingGroupChair.query.filter_by(group_acronym=acronym, chair_name=chair_name).first()
     if existing:
-        db.session.delete(existing)
+        return jsonify({'success': False, 'message': 'Chair already exists'}), 400
 
     # Add new chair (unapproved)
     chair = WorkingGroupChair(
@@ -2572,31 +2610,46 @@ def set_group_chair(acronym):
     db.session.add(chair)
     db.session.commit()
 
-    return jsonify({'success': True, 'message': 'Chair set successfully'})
+    return jsonify({'success': True, 'message': 'Chair added successfully'})
 
-@app.route('/group/<acronym>/approve_chair', methods=['POST'])
+@app.route('/group/<acronym>/update_chairs', methods=['POST'])
 @require_role('admin')
-def approve_group_chair(acronym):
-    chair = WorkingGroupChair.query.filter_by(group_acronym=acronym).first()
-    if not chair:
-        return jsonify({'success': False, 'message': 'No chair set'}), 404
+def update_group_chairs(acronym):
+    data = request.get_json()
+    chair_ids = data.get('chair_ids', [])
 
-    chair.approved = True
+    # Mark all chairs as unapproved first
+    WorkingGroupChair.query.filter_by(group_acronym=acronym).update({'approved': False})
+
+    # Approve selected chairs
+    if chair_ids:
+        WorkingGroupChair.query.filter(
+            WorkingGroupChair.group_acronym == acronym,
+            WorkingGroupChair.id.in_(chair_ids)
+        ).update({'approved': True})
+
     db.session.commit()
 
-    return jsonify({'success': True, 'message': 'Chair approved successfully'})
+    return jsonify({'success': True, 'message': 'Chairs updated successfully'})
 
-@app.route('/group/<acronym>/remove_chair', methods=['POST'])
+@app.route('/group/<acronym>/remove_chairs', methods=['POST'])
 @require_role('admin')
-def remove_group_chair(acronym):
-    chair = WorkingGroupChair.query.filter_by(group_acronym=acronym).first()
-    if not chair:
-        return jsonify({'success': False, 'message': 'No chair set'}), 404
+def remove_group_chairs(acronym):
+    data = request.get_json()
+    chair_ids = data.get('chair_ids', [])
 
-    db.session.delete(chair)
+    if not chair_ids:
+        return jsonify({'success': False, 'message': 'No chairs selected'}), 400
+
+    # Remove selected chairs
+    WorkingGroupChair.query.filter(
+        WorkingGroupChair.group_acronym == acronym,
+        WorkingGroupChair.id.in_(chair_ids)
+    ).delete()
+
     db.session.commit()
 
-    return jsonify({'success': True, 'message': 'Chair removed successfully'})
+    return jsonify({'success': True, 'message': 'Chairs removed successfully'})
 
 @app.route('/person/')
 def people():
