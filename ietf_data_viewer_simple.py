@@ -1535,16 +1535,21 @@ def submission_status():
     submissions_html = ""
     for submission in submissions:
         status_badge = {
-            'submitted': 'badge bg-warning',
+            'submitted': 'badge bg-warning text-dark',
             'approved': 'badge bg-success',
-            'rejected': 'badge bg-danger'
+            'rejected': 'badge bg-danger',
+            'published': 'badge bg-info'
         }.get(submission.status, 'badge bg-secondary')
 
         submissions_html += f"""
         <div class="submission-item">
             <div class="card mb-3">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <h6 class="mb-0">{submission.title}</h6>
+                    <h6 class="mb-0">
+                        <a href="/submit/status/{submission.id}/" class="text-decoration-none">
+                            {submission.title}
+                        </a>
+                    </h6>
                     <span class="{status_badge}">{submission.status.title()}</span>
                 </div>
                 <div class="card-body">
@@ -1553,8 +1558,10 @@ def submission_status():
                             <p class="mb-2"><strong>Authors:</strong> {', '.join(submission.authors)}</p>
                             <p class="mb-2"><strong>Group:</strong> {submission.group or 'None'}</p>
                             <p class="mb-2"><strong>Submitted:</strong> {submission.submitted_at.strftime('%Y-%m-%d %H:%M')}</p>
+                            {f'<p class="mb-2"><strong>Abstract:</strong> {submission.abstract[:100]}...</p>' if submission.abstract else ''}
                         </div>
                         <div class="col-md-4 text-end">
+                            <a href="/submit/status/{submission.id}/" class="btn btn-sm btn-primary me-2">View Details</a>
                             <a href="/doc/draft/{submission.id}/" class="btn btn-sm btn-outline-primary">View Draft</a>
                         </div>
                     </div>
@@ -1569,7 +1576,7 @@ def submission_status():
             <ol class="breadcrumb">
                 <li class="breadcrumb-item"><a href="/">Home</a></li>
                 <li class="breadcrumb-item"><a href="/submit/">Submit Draft</a></li>
-                <li class="breadcrumb-item active">Submission Status</li>
+                <li class="breadcrumb-item active">My Submissions</li>
             </ol>
         </nav>
 
@@ -1586,7 +1593,90 @@ def submission_status():
     </div>
     """
 
-    return BASE_TEMPLATE.format(title="Submission Status - MLTF", theme=current_theme, user_menu=user_menu, content=content)
+    return BASE_TEMPLATE.format(title="My Submissions - MLTF", theme=current_theme, user_menu=user_menu, content=content)
+
+@app.route('/submit/status/<submission_id>/')
+@require_auth
+def submission_detail(submission_id):
+    user_menu = generate_user_menu()
+    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
+    current_user = get_current_user()
+
+    submission = Submission.query.filter_by(id=submission_id).first()
+    if not submission:
+        return "Submission not found", 404
+
+    # Check if user owns this submission or is admin
+    if submission.submitted_by != current_user['name'] and current_user.get('role') not in ['admin', 'editor']:
+        return "Access denied", 403
+
+    # Try to read file content for preview
+    file_content = "File preview not available"
+    if submission.file_path and os.path.exists(submission.file_path):
+        try:
+            with open(submission.file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                # Limit preview to first 2000 characters
+                file_content = content[:2000] + ("..." if len(content) > 2000 else "")
+        except Exception as e:
+            file_content = f"Error reading file: {str(e)}"
+
+    # Render template with submission data
+    content = SUBMISSION_STATUS_TEMPLATE.replace(
+        '{{ submission.id }}', submission.id
+    ).replace(
+        '{{ submission.status.title() }}', submission.status.title()
+    ).replace(
+        '{{ submission.title }}', submission.title
+    ).replace(
+        '{{ submission.authors | join(\', \') }}', ', '.join(submission.authors)
+    ).replace(
+        '{{ submission.draft_name }}', getattr(submission, 'draft_name', submission.id)
+    ).replace(
+        '{{ submission.submitted_at }}', submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S')
+    ).replace(
+        '{{ submission.filename }}', submission.filename
+    ).replace(
+        '{{ file_content }}', file_content
+    ).replace(
+        '{{ submission.approved_at }}', submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else ''
+    ).replace(
+        '{{ submission.rejected_at }}', submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else ''
+    )
+
+    # Add current user context for admin actions
+    if current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']):
+        content = content.replace(
+            '{% if submission.status == \'submitted\' and (current_user and (current_user.role in [\'admin\', \'editor\'] or current_user.name in [\'admin\', \'Admin User\'])) %}',
+            '<div class="row mb-3"><div class="col-sm-3"><strong>Actions:</strong></div><div class="col-sm-9">'
+        ).replace(
+            '{% endif %}',
+            '</div></div>'
+        ).replace(
+            '{{ submission.id }}', submission.id
+        )
+    else:
+        # Remove admin sections for regular users
+        import re
+        content = re.sub(r'{% if submission\.status == \'submitted\' and .*?%}.*?{% endif %}', '', content, flags=re.DOTALL)
+
+    # Handle conditional sections
+    if submission.abstract:
+        content = content.replace('{% if submission.abstract %}', '').replace('{% endif %}', '')
+    else:
+        content = re.sub(r'{% if submission\.abstract %}.*?{% endif %}', '', content, flags=re.DOTALL)
+
+    if submission.status in ['approved', 'rejected']:
+        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+    else:
+        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+
+    if submission.status == 'approved':
+        content = content.replace('{% if submission.status == \'approved\' %}', '').replace('{% else %}', '').replace('{% endif %}', '')
+    else:
+        content = content.replace('{% if submission.status == \'approved\' %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
+
+    return BASE_TEMPLATE.format(title=f"Submission {submission.id} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
 LOGIN_TEMPLATE = """
 <div class="container mt-4">
@@ -2694,6 +2784,63 @@ def update_submission_status(submission_id):
                            admin_user['name'], action_details)
 
     return jsonify({'success': True, 'message': f'Status updated to {new_status}'})
+
+@app.route('/submit/approve/<submission_id>', methods=['POST'])
+@require_role('admin')
+def approve_submission(submission_id):
+    submission = Submission.query.filter_by(id=submission_id).first()
+    if not submission:
+        flash('Submission not found', 'error')
+        return redirect('/admin/submissions/')
+
+    submission.status = 'approved'
+    submission.approved_at = datetime.utcnow()
+    db.session.commit()
+
+    # Log the action
+    admin_user = get_current_user()
+    add_to_document_history(f"submission-{submission.id}", "approved", admin_user['name'],
+                           f"Approved submission: {submission.title}")
+
+    flash(f'Submission {submission.id} approved successfully!', 'success')
+    return redirect(f'/submit/status/{submission_id}/')
+
+@app.route('/submit/reject/<submission_id>', methods=['POST'])
+@require_role('admin')
+def reject_submission(submission_id):
+    submission = Submission.query.filter_by(id=submission_id).first()
+    if not submission:
+        flash('Submission not found', 'error')
+        return redirect('/admin/submissions/')
+
+    submission.status = 'rejected'
+    submission.rejected_at = datetime.utcnow()
+    db.session.commit()
+
+    # Log the action
+    admin_user = get_current_user()
+    add_to_document_history(f"submission-{submission.id}", "rejected", admin_user['name'],
+                           f"Rejected submission: {submission.title}")
+
+    flash(f'Submission {submission.id} rejected!', 'warning')
+    return redirect(f'/submit/status/{submission_id}/')
+
+@app.route('/download/<submission_id>')
+@require_auth
+def download_submission(submission_id):
+    submission = Submission.query.filter_by(id=submission_id).first()
+    if not submission:
+        return "Submission not found", 404
+
+    # Check if user owns this submission or is admin
+    current_user = get_current_user()
+    if submission.submitted_by != current_user['name'] and current_user.get('role') not in ['admin', 'editor']:
+        return "Access denied", 403
+
+    if not submission.file_path or not os.path.exists(submission.file_path):
+        return "File not found", 404
+
+    return send_file(submission.file_path, as_attachment=True, download_name=submission.filename)
 
 @app.route('/admin/analytics/')
 @require_role('admin')
