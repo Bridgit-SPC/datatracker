@@ -660,6 +660,9 @@ BASE_TEMPLATE = """
             box-shadow: var(--shadow);
             padding: 0;
             height: 53px;
+            z-index: 2147483646 !important; /* Just below dropdown max */
+            position: relative !important;
+            overflow: visible !important;
         }}
 
         .navbar-brand {{
@@ -941,14 +944,38 @@ BASE_TEMPLATE = """
             background: var(--border-hover);
         }}
 
-        /* Dropdown menu z-index fix - extremely high to ensure it's above everything */
+        /* Dropdown menu z-index fix - maximum priority to ensure it's above everything */
         .dropdown-menu {{
-            z-index: 10000;
+            z-index: 2147483647 !important; /* Maximum possible z-index value */
             border-radius: 12px;
             border: 1px solid var(--border-color);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             background-color: var(--card-bg);
             margin-top: 8px;
+            overflow: visible !important;
+            position: absolute !important;
+            top: 100% !important;
+            left: 0 !important;
+            min-width: 200px;
+        }}
+
+        /* Ensure dropdown container doesn't clip */
+        .dropdown {{
+            position: relative !important;
+            overflow: visible !important;
+        }}
+
+        /* Prevent any parent from clipping the dropdown */
+        .navbar .dropdown {{
+            overflow: visible !important;
+        }}
+
+        /* Force dropdown to be on top of everything */
+        .navbar .dropdown-menu {{
+            z-index: 2147483647 !important;
+            position: absolute !important;
+            top: 100% !important;
+            left: 0 !important;
         }}
 
         .dropdown-item {{
