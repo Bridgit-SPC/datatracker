@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.append('.')
 
-from ietf_data_viewer_simple import app, USERS, WORKING_GROUP_CHAIRS, COMMENTS, SUBMISSIONS
+from ietf_data_viewer_simple import app, COMMENTS
 
 def test_critical_features():
     """Test all critical application features"""
@@ -38,11 +38,17 @@ def test_critical_features():
 
         # 3. User Management
         print("3. 👥 Testing User Management...")
-        user_count = len(USERS)
-        if user_count > 0:
-            print(f"   ✅ {user_count} users in system")
+        # Test user registration functionality
+        response = client.post('/register/', data={
+            'username': 'testuser',
+            'password': 'testpass123',
+            'name': 'Test User',
+            'email': 'test@example.com'
+        }, follow_redirects=True)
+        if response.status_code == 200:
+            print("   ✅ User registration works")
         else:
-            print("   ❌ No users found")
+            print(f"   ❌ User registration failed: {response.status_code}")
             return False
 
         # 4. Document System
@@ -87,8 +93,13 @@ def test_critical_features():
 
         # 7. Submission System
         print("7. 📤 Testing Submission System...")
-        submission_count = len(SUBMISSIONS)
-        print(f"   📊 {submission_count} total submissions in system")
+        # Test submission form accessibility
+        response = client.get('/submit/')
+        if response.status_code == 200 and 'Submit Internet-Draft' in response.get_data(as_text=True):
+            print("   ✅ Submission form accessible")
+        else:
+            print(f"   ❌ Submission form failed: {response.status_code}")
+            return False
 
         response = client.get('/submit/')
         if 'Submit Internet-Draft' in response.get_data(as_text=True):
@@ -108,9 +119,13 @@ def test_critical_features():
 
         # 9. Chair Management
         print("9. 👑 Testing Chair Management...")
-        chair_count = len(WORKING_GROUP_CHAIRS)
-        approved_chairs = len([c for c in WORKING_GROUP_CHAIRS.values() if c['approved']])
-        print(f"   📊 {chair_count} total chairs, {approved_chairs} approved")
+        # Test chair management page access
+        response = client.get('/admin/chairs/')
+        if response.status_code == 200 and 'Chair Management' in response.get_data(as_text=True):
+            print("   ✅ Chair management accessible")
+        else:
+            print(f"   ❌ Chair management failed: {response.status_code}")
+            return False
 
         # 10. Theme System
         print("10. 🌙 Testing Theme System...")
