@@ -1,184 +1,45 @@
 #!/usr/bin/env python3
 """
-MLTF Data Viewer - Shows the MLTF datatracker data from test files
-This displays the Meta-Layer Task Force data so you can see it working.
+IETF Data Viewer - Shows the IETF datatracker data from test files
+This displays the actual IETF data so you can see it working before we transform it to MLTF.
 """
 
-from flask import Flask, render_template_string, request, redirect, url_for, flash, session, send_file, jsonify
-from flask_sqlalchemy import SQLAlchemy
+from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 import os
 import re
-import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
-
-# Import file processing libraries
-try:
-    import PyPDF2
-    PDF_SUPPORT = True
-except ImportError:
-    PDF_SUPPORT = False
-
-try:
-    import docx
-    DOCX_SUPPORT = True
-except ImportError:
-    DOCX_SUPPORT = False
-
-# Database initialization
-def init_db():
-    """Initialize database and create tables"""
-    with app.app_context():
-        db.create_all()
-
-        # Migrate hardcoded users to database if not already done
-        if User.query.count() == 0:
-            migrate_hardcoded_users()
-
-        # Load published drafts from database into memory
-        published_drafts = PublishedDraft.query.all()
-        for draft in published_drafts:
-            draft_entry = {
-                'name': draft.name,
-                'title': draft.title,
-                'authors': draft.authors,
-                'group': draft.group,
-                'status': draft.status,
-                'rev': draft.rev,
-                'pages': draft.pages,
-                'words': draft.words,
-                'date': draft.date,
-                'abstract': draft.abstract,
-                'stream': draft.stream
-            }
-            DRAFTS.append(draft_entry)
-
-        print(f"Database initialized: {User.query.count()} users, {len(published_drafts)} published drafts loaded")
-
-def migrate_hardcoded_users():
-    """Migrate hardcoded users to database"""
-    hardcoded_users = {
-        'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'dark'},
-        'daveed': {'password': 'admin123', 'name': 'Daveed', 'email': 'daveed@bridgit.io', 'role': 'admin', 'theme': 'dark'},
-        'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'dark'},
-        'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'dark'},
-        'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com', 'role': 'editor', 'theme': 'dark'}
-    }
-
-    for username, user_data in hardcoded_users.items():
-        if not User.query.filter_by(username=username).first():
-            user = User(
-                username=username,
-                password_hash=generate_password_hash(user_data['password']),
-                name=user_data['name'],
-                email=user_data['email'],
-                role=user_data.get('role', 'user'),
-                theme=user_data.get('theme', 'dark')
-            )
-            db.session.add(user)
-
-    db.session.commit()
-    print(f"Migrated {len(hardcoded_users)} hardcoded users to database")
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'  # For flash messages
 
-# Database setup
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///datatracker.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+# Store comments in memory (in a real app, this would be a database)
+COMMENTS = {}
 
-# Database Models
-class Submission(db.Model):
-    id = db.Column(db.String(8), primary_key=True)
-    title = db.Column(db.String(255))
-    authors = db.Column(db.JSON)  # List of author dicts
-    abstract = db.Column(db.Text)
-    group = db.Column(db.String(50))
-    filename = db.Column(db.String(255))
-    file_path = db.Column(db.String(500))
-    draft_name = db.Column(db.String(255))
-    status = db.Column(db.String(20), default='submitted')  # submitted, approved, rejected
-    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
-    submitted_by = db.Column(db.String(100), default='Anonymous User')
-    approved_at = db.Column(db.DateTime, nullable=True)
-    rejected_at = db.Column(db.DateTime, nullable=True)
+# Store submissions in memory (in a real app, this would be a database)
+SUBMISSIONS = {}
 
-class PublishedDraft(db.Model):
-    """Store published/approved drafts separately from original test data"""
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), unique=True, index=True)
-    title = db.Column(db.String(255))
-    authors = db.Column(db.JSON)
-    group = db.Column(db.String(50))
-    status = db.Column(db.String(20), default='active')
-    rev = db.Column(db.String(5), default='00')
-    pages = db.Column(db.Integer, default=1)
-    words = db.Column(db.Integer, default=0)
-    date = db.Column(db.String(10))  # YYYY-MM-DD
-    abstract = db.Column(db.Text)
-    stream = db.Column(db.String(20), default='ietf')
-    submission_id = db.Column(db.String(8), db.ForeignKey('submission.id'), nullable=True)
-
-
-class Comment(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    draft_name = db.Column(db.String(255), index=True)
-    text = db.Column(db.Text)
-    author = db.Column(db.String(100))
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    parent_id = db.Column(db.Integer, db.ForeignKey('comment.id'), nullable=True)
-
-    # Relationship for replies
-    replies = db.relationship('Comment', backref=db.backref('parent', remote_side=[id]), lazy=True)
-
-class DocumentHistory(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    draft_name = db.Column(db.String(255), index=True)
-    action = db.Column(db.String(50))
-    user = db.Column(db.String(100))
-    details = db.Column(db.Text)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
-class WorkingGroupMember(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    group_acronym = db.Column(db.String(50), index=True)
-    user_name = db.Column(db.String(100), index=True)
-    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, index=True)
-    password_hash = db.Column(db.String(255))
-    name = db.Column(db.String(100))
-    email = db.Column(db.String(100), unique=True, index=True)
-    role = db.Column(db.String(20), default='user')  # admin, editor, user
-    theme = db.Column(db.String(10), default='dark')  # light, dark, auto
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_login = db.Column(db.DateTime, nullable=True)
-
-class WorkingGroupChair(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    group_acronym = db.Column(db.String(50), index=True)  # Remove unique constraint to allow multiple chairs
-    chair_name = db.Column(db.String(100))
-    approved = db.Column(db.Boolean, default=False)
-    set_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-# Users are now stored in database - this dict is kept for backward compatibility during migration
+# Store users in memory (in a real app, this would be a database)
+USERS = {
+    'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org'},
+    'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com'},
+    'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com'},
+    'shiftshapr': {'password': 'mynewpassword123', 'name': 'Shift Shapr', 'email': 'shiftshapr@example.com'}
+}
 
 # Store document history in memory
 DOCUMENT_HISTORY = {}
-
-# Store comments in memory
-COMMENTS = {}
 
 # Store comment likes in memory
 COMMENT_LIKES = {}
 
 # Store comment replies in memory
 COMMENT_REPLIES = {}
+
+# Store working group chairs in memory
+WORKING_GROUP_CHAIRS = {}
 
 # Configuration for file uploads
 UPLOAD_FOLDER = '/home/ubuntu/data-tracker/uploads'
@@ -217,15 +78,24 @@ def require_auth(f):
     return decorated_function
 
 def require_role(required_role):
-    """Decorator to require a specific role"""
+    """Decorator to require specific user role"""
     def decorator(f):
         def decorated_function(*args, **kwargs):
             if 'user' not in session:
                 flash('Please log in to access this page.', 'error')
                 return redirect(url_for('login'))
-            current_user = get_current_user()
-            if not current_user or current_user.get('role') != required_role:
-                return "Access denied", 403
+
+            user = USERS.get(session['user'])
+            if not user:
+                flash('User not found.', 'error')
+                return redirect(url_for('login'))
+
+            # Check if user has required role
+            user_role = user.get('role', 'user')
+            if user_role not in ['admin', 'editor'] and session['user'] != 'admin':
+                flash('Access denied. Admin privileges required.', 'error')
+                return redirect(url_for('home'))
+
             return f(*args, **kwargs)
         decorated_function.__name__ = f.__name__
         return decorated_function
@@ -234,43 +104,8 @@ def require_role(required_role):
 def get_current_user():
     """Get current logged in user"""
     if 'user' in session:
-        user = User.query.filter_by(username=session['user']).first()
-        if user:
-            return {
-                'username': user.username,
-                'name': user.name,
-                'email': user.email,
-                'role': user.role,
-                'theme': user.theme
-            }
+        return USERS.get(session['user'])
     return None
-
-def generate_user_menu():
-    """Generate user menu HTML for navbar"""
-    current_user = get_current_user()
-    if current_user:
-        user_role = current_user.get('role', 'user')
-        return f"""
-        <div class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                {current_user['name']}
-            </a>
-            <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/admin/">Admin Dashboard</a></li>
-                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-            </ul>
-        </div>
-        """
-    else:
-        return """
-        <div class="nav-item">
-            <a class="nav-link" href="/login/">Sign In</a>
-        </div>
-        <div class="nav-item">
-            <a class="nav-link" href="/register/">Register</a>
-        </div>
-        """
 
 def add_to_document_history(draft_name, action, user, details=""):
     """Add an entry to document history"""
@@ -310,113 +145,64 @@ def is_comment_liked(draft_name, comment_id, user):
 
 def add_comment_reply(draft_name, parent_comment_id, reply_text, user):
     """Add a reply to a comment"""
-    # Create reply in database
-    reply = Comment(
-        draft_name=draft_name,
-        text=reply_text,
-        author=user['name'],
-        parent_id=int(parent_comment_id)
-    )
-    db.session.add(reply)
-    db.session.commit()
+    reply_key = f"{draft_name}:{parent_comment_id}"
+    if reply_key not in COMMENT_REPLIES:
+        COMMENT_REPLIES[reply_key] = []
+    
+    reply = {
+        'id': f"reply_{len(COMMENT_REPLIES[reply_key]) + 1}",
+        'author': user['name'],
+        'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'comment': reply_text,
+        'avatar': ''.join([word[0].upper() for word in user['name'].split()[:2]])
+    }
+    COMMENT_REPLIES[reply_key].append(reply)
     return reply
 
-def build_comment_tree(draft_name):
-    """Build a tree structure of comments with nested replies"""
-    # Get all comments for this draft
-    all_comments = Comment.query.filter_by(draft_name=draft_name).order_by(Comment.timestamp).all()
+def get_comment_replies(draft_name, comment_id):
+    """Get replies for a comment"""
+    reply_key = f"{draft_name}:{comment_id}"
+    return COMMENT_REPLIES.get(reply_key, [])
 
-    # Create a dictionary for quick lookup
-    comment_dict = {}
-    for comment in all_comments:
-        comment_dict[comment.id] = {
-            'id': str(comment.id),
-            'author': comment.author,
-            'date': comment.timestamp.strftime('%Y-%m-%d %H:%M'),
-            'comment': comment.text,
-            'avatar': ''.join([word[0].upper() for word in comment.author.split()[:2]]),
-            'replies': []
-        }
-
-    # Build the tree
-    top_level_comments = []
-    for comment in all_comments:
-        if comment.parent_id is None:
-            # Top-level comment
-            top_level_comments.append(comment_dict[comment.id])
-        else:
-            # Reply - add to parent's replies
-            if comment.parent_id in comment_dict:
-                comment_dict[comment.parent_id]['replies'].append(comment_dict[comment.id])
-
-    return top_level_comments
-
-def render_comment_tree(comments, draft_name, level=0):
-    """Recursively render comments and their nested replies"""
-    if not comments:
+def render_replies(replies):
+    """Render replies HTML"""
+    if not replies:
         return ""
     
-    indent_class = f"ms-{level * 4}" if level > 0 else ""
-    html = f'<div class="{indent_class} mt-2">' if level > 0 else '<div class="mt-2">'
-
-    for comment in comments:
-        comment_id = comment.get('id', 'unknown')
-        like_count = get_comment_likes(draft_name, comment_id)
-        is_liked = is_comment_liked(draft_name, comment_id, get_current_user()['name']) if get_current_user() else False
-
-        # Like button styling
-        like_btn_class = "btn-outline-danger" if is_liked else "btn-outline-secondary"
-        like_icon = "❤️" if is_liked else "🤍"
-
-        # Size styling based on nesting level
-        avatar_size = max(30 - level * 5, 20)  # Decrease avatar size for nested replies
-        font_size = max(14 - level * 2, 12)    # Decrease font size for nested replies
-        card_class = "mb-2" if level > 0 else "mb-3"
-
-        html += f"""
-        <div class="card {card_class}" id="comment-{comment_id}">
+    replies_html = '<div class="ms-4 mt-2">'
+    for reply in replies:
+        replies_html += f"""
+        <div class="card mb-2">
             <div class="card-body py-2">
                 <div class="d-flex align-items-center mb-1">
-                    <div class="avatar bg-{"secondary" if level > 0 else "primary"} text-white rounded-circle me-2" style="width: {avatar_size}px; height: {avatar_size}px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: {font_size - 2}px;">
-                        {comment['avatar']}
+                    <div class="avatar bg-secondary text-white rounded-circle me-2" style="width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px;">
+                        {reply['avatar']}
                     </div>
                     <div>
-                        <strong style="font-size: {font_size}px;">{comment['author']}</strong>
-                        <small class="text-muted ms-2">{comment['date']}</small>
+                        <strong style="font-size: 14px;">{reply['author']}</strong>
+                        <small class="text-muted ms-2">{reply['date']}</small>
                     </div>
                 </div>
-                <p class="mb-2" style="font-size: {font_size}px;">{comment['comment']}</p>
-                <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm {like_btn_class}" onclick="toggleLike('{comment_id}')" style="font-size: {font_size - 2}px;">
-                        {like_icon} {like_count}
-                    </button>
-                    <button class="btn btn-sm btn-outline-primary" onclick="toggleReply('{comment_id}')" style="font-size: {font_size - 2}px;">
-                        Reply
-                    </button>
-                </div>
-
-                <!-- Reply form (hidden by default) -->
-                <div id="reply-form-{comment_id}" class="mt-3" style="display: none;">
-                    <form method="POST" class="d-flex gap-2">
-                        <input type="hidden" name="action" value="reply">
-                        <input type="hidden" name="parent_comment_id" value="{comment_id}">
-                        <input type="text" name="reply_text" class="form-control" placeholder="Write a reply..." required style="font-size: {font_size}px;">
-                        <button type="submit" class="btn btn-primary btn-sm" style="font-size: {font_size - 2}px;">Reply</button>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleReply('{comment_id}')" style="font-size: {font_size - 2}px;">Cancel</button>
-                    </form>
-                </div>
-
-                <!-- Nested replies -->
-                {render_comment_tree(comment.get('replies', []), draft_name, level + 1)}
+                <p class="mb-0" style="font-size: 14px;">{reply['comment']}</p>
             </div>
         </div>
         """
+    replies_html += '</div>'
+    return replies_html
 
-    html += '</div>'
-    return html
+# Real IETF participant names (from actual IETF community)
+IETF_PARTICIPANTS = [
+    "Henrik Levkowetz", "John Klensin", "Dave Crocker", "Marshall Rose", "Erik Nordmark",
+    "Scott Bradner", "Brian Carpenter", "Fred Baker", "Harald Alvestrand", "Vint Cerf",
+    "Bob Hinden", "Steve Deering", "Randy Bush", "Geoff Huston", "Tony Hain",
+    "Mark Handley", "Sally Floyd", "Vern Paxson", "Craig Partridge", "Jon Postel",
+    "David Clark", "Radia Perlman", "Paul Mockapetris", "Tim Berners-Lee", "Dan Bernstein",
+    "Wietse Venema", "Theo de Raadt", "Linus Torvalds", "Richard Stallman", "Eric Raymond",
+    "Alan Cox", "Andrew Tridgell", "Larry Wall", "Guido van Rossum", "Bjarne Stroustrup",
+    "Dennis Ritchie", "Ken Thompson", "Brian Kernighan", "Rob Pike", "Russ Cox"
+]
 
-
-# Load MLTF data from test files
+# Load IETF data from test files
 def load_draft_data():
     """Load draft data from test files"""
     drafts = []
@@ -429,7 +215,7 @@ def load_draft_data():
                 match = re.search(r'xfilter-draft-([^:]+):', line)
                 if match:
                     draft_name = match.group(1)
-                    # Create realistic MLTF draft information
+                    # Create realistic IETF draft information
                     draft_title = draft_name.replace('-', ' ').title()
                     drafts.append({
                         'name': f'draft-{draft_name}',
@@ -449,95 +235,6 @@ def load_draft_data():
 def load_group_data():
     """Load group data from test files"""
     groups = []
-
-    # Desirable Properties mapping for better names and descriptions
-    dp_descriptions = {
-        'dp1-federated-auth': {
-            'title': 'Federated Authentication & Accountability',
-            'desc': 'Developing standards for federated authentication systems that enable cross-platform identity verification while maintaining accountability and audit trails.'
-        },
-        'dp2-participant-agency': {
-            'title': 'Participant Agency and Empowerment',
-            'desc': 'Creating frameworks that empower participants with full control over their digital presence, decision-making authority, and ability to shape their environment.'
-        },
-        'dp3-adaptive-governance': {
-            'title': 'Adaptive Governance Supporting an Exponentially Growing Community',
-            'desc': 'Designing governance systems that can scale with exponential community growth while maintaining fairness, participation, and adaptability to emerging challenges.'
-        },
-        'dp4-data-sovereignty': {
-            'title': 'Data Sovereignty and Privacy',
-            'desc': 'Establishing protocols for complete data ownership, privacy by design, and user-controlled data portability across the Meta-Layer ecosystem.'
-        },
-        'dp5-decentralized-namespace': {
-            'title': 'Decentralized Namespace',
-            'desc': 'Developing decentralized naming systems that provide persistent, user-controlled identifiers and namespaces independent of centralized authorities.'
-        },
-        'dp6-commerce': {
-            'title': 'Commerce',
-            'desc': 'Creating secure, transparent commerce protocols that enable value exchange, micropayments, and economic interactions within the Meta-Layer.'
-        },
-        'dp7-simplicity-interoperability': {
-            'title': 'Simplicity and Interoperability',
-            'desc': 'Designing systems that reduce complexity while ensuring seamless interoperability between different platforms, tools, and communities.'
-        },
-        'dp8-collaborative-environment': {
-            'title': 'Collaborative Environment and Meta-Communities',
-            'desc': 'Building frameworks for meta-communities that span multiple platforms and enable fluid collaboration across organizational boundaries.'
-        },
-        'dp9-developer-incentives': {
-            'title': 'Developer and Community Incentives',
-            'desc': 'Creating incentive structures that reward developers and communities for contributing to the ecosystem while aligning with long-term sustainability.'
-        },
-        'dp10-education': {
-            'title': 'Education',
-            'desc': 'Developing educational frameworks and tools that help participants understand and effectively use the Meta-Layer capabilities.'
-        },
-        'dp21-multi-modal': {
-            'title': 'Multi-modal',
-            'desc': 'Enabling seamless interaction across multiple communication modalities including text, voice, video, AR/VR, and emerging interaction paradigms.'
-        },
-        'dp11-safe-ethical-ai': {
-            'title': 'Safe and Ethical AI',
-            'desc': 'Establishing ethical frameworks and safety protocols for AI systems operating within the Meta-Layer to ensure alignment with human values.'
-        },
-        'dp12-community-ai-governance': {
-            'title': 'Community-Based AI Governance',
-            'desc': 'Creating community-driven governance models for AI systems that ensure transparency, accountability, and collective oversight.'
-        },
-        'dp13-ai-containment': {
-            'title': 'AI Containment',
-            'desc': 'Developing containment strategies and technical measures to prevent AI systems from exceeding intended boundaries or causing unintended consequences.'
-        },
-        'dp14-trust-transparency': {
-            'title': 'Trust and Transparency',
-            'desc': 'Building trust through transparent decision-making, auditable processes, and verifiable system behaviors throughout the Meta-Layer.'
-        },
-        'dp15-security-provenance': {
-            'title': 'Security and Provenance',
-            'desc': 'Ensuring security through comprehensive provenance tracking, secure infrastructure, and verifiable data lineage across all interactions.'
-        },
-        'dp16-roadmap-milestones': {
-            'title': 'Roadmap and Milestones',
-            'desc': 'Developing structured roadmaps with clear milestones that guide the evolution of the Meta-Layer while maintaining community alignment.'
-        },
-        'dp17-financial-sustainability': {
-            'title': 'Financial Sustainability',
-            'desc': 'Creating financial models and incentive structures that ensure the long-term sustainability and equitable growth of the Meta-Layer ecosystem.'
-        },
-        'dp18-feedback-reputation': {
-            'title': 'Feedback Loops and Reputation',
-            'desc': 'Implementing feedback mechanisms and reputation systems that reward positive contributions and maintain community standards.'
-        },
-        'dp19-community-engagement': {
-            'title': 'Amplifying Presence and Community Engagement',
-            'desc': 'Developing systems that amplify community participation, enhance visibility of contributions, and strengthen community bonds.'
-        },
-        'dp20-community-ownership': {
-            'title': 'Community Ownership',
-            'desc': 'Ensuring community ownership through decentralized governance, shared decision-making, and equitable distribution of value and control.'
-        }
-    }
-
     try:
         with open('/home/ubuntu/datatracker/test/data/group-aliases', 'r') as f:
             for line in f:
@@ -547,24 +244,15 @@ def load_group_data():
                 match = re.search(r'xfilter-([^:]+):', line)
                 if match:
                     group_name = match.group(1)
-
-                    # Use specific DP description if available, otherwise generate generic one
-                    if group_name in dp_descriptions:
-                        dp_info = dp_descriptions[group_name]
-                        group_title = dp_info['title']
-                        description = dp_info['desc']
-                    else:
-                        # Fallback for non-DP groups
-                        group_title = group_name.replace('-', ' ').title()
-                        description = f'The {group_title} Working Group focuses on {group_title.lower()} standards and protocols for the Internet.'
-
+                    # Create realistic IETF working group data
+                    group_title = group_name.replace('-', ' ').title()
                     groups.append({
                         'acronym': group_name,
                         'name': f'{group_title} Working Group',
                         'type': 'Working Group',
                         'state': 'Active',
                         'chairs': [f'Chair {i+1}' for i in range(1 + (hash(group_name) % 2))],  # 1-2 chairs
-                        'description': description
+                        'description': f'The {group_title} Working Group focuses on {group_title.lower()} standards and protocols for the Internet.'
                     })
     except FileNotFoundError:
         print("Group aliases file not found")
@@ -577,548 +265,37 @@ GROUPS = load_group_data()
 # HTML Templates
 BASE_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en" data-theme="{theme}">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root {{
-            /* Light theme (default) */
-            --bg-color: #ffffff;
-            --bg-secondary: #f7f9fa;
-            --bg-tertiary: #e1e8ed;
-            --text-primary: #14171a;
-            --text-secondary: #657786;
-            --text-muted: #aab8c2;
-            --border-color: #e1e8ed;
-            --border-hover: #ccd6dd;
-            --accent-color: #1d9bf0;
-            --accent-hover: #1a8cd8;
-            --success-color: #00ba7c;
-            --warning-color: #f7b529;
-            --error-color: #f4212e;
-            --navbar-bg: #ffffff;
-            --navbar-text: #14171a;
-            --navbar-border: #e1e8ed;
-            --card-bg: #ffffff;
-            --card-border: #e1e8ed;
-            --input-bg: #ffffff;
-            --input-border: #657786;
-            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.15);
-        }}
-
-        [data-theme="dark"] {{
-            /* Dark theme */
-            --bg-color: #000000;
-            --bg-secondary: #16181c;
-            --bg-tertiary: #1d1f23;
-            --text-primary: #ffffff;
-            --text-secondary: #8b98a5;
-            --text-muted: #6c7b8a;
-            --border-color: #2f3336;
-            --border-hover: #3d4043;
-            --accent-color: #1d9bf0;
-            --accent-hover: #1a8cd8;
-            --success-color: #00ba7c;
-            --warning-color: #f7b529;
-            --error-color: #f4212e;
-            --navbar-bg: #16181c;
-            --navbar-text: #ffffff;
-            --navbar-border: #2f3336;
-            --card-bg: #16181c;
-            --card-border: #2f3336;
-            --input-bg: #16181c;
-            --input-border: #3d4043;
-            --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-            --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.4);
-        }}
-
-        * {{
-            box-sizing: border-box;
-        }}
-
-        body {{
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.5;
-            margin: 0;
-            min-height: 100vh;
-            transition: background-color 0.2s ease, color 0.2s ease;
-        }}
-
-        /* Modern navbar similar to X */
-        .navbar {{
-            background-color: var(--navbar-bg) !important;
-            border-bottom: 1px solid var(--navbar-border);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            box-shadow: var(--shadow);
-            padding: 0;
-            height: 53px;
-            z-index: 2147483646 !important; /* Just below dropdown max */
-            position: relative !important;
-            overflow: visible !important;
-        }}
-
-        .navbar-brand {{
-            color: var(--navbar-text) !important;
-            font-weight: 700;
-            font-size: 18px;
-            padding: 16px 20px;
-            margin: 0;
-        }}
-
-        .navbar-brand:hover {{
-            color: var(--accent-color) !important;
-        }}
-
-        .navbar-nav {{
-            align-items: center;
-        }}
-
-        .nav-link {{
-            color: var(--text-secondary) !important;
-            font-weight: 500;
-            padding: 16px 20px;
-            margin: 0;
-            border-radius: 0;
-            transition: all 0.2s ease;
-        }}
-
-        .nav-link:hover {{
-            background-color: var(--bg-secondary);
-            color: var(--accent-color) !important;
-        }}
-
-        .nav-link.active {{
-            color: var(--accent-color) !important;
-            border-bottom: 3px solid var(--accent-color);
-            background-color: transparent;
-        }}
-
-        /* Theme toggle button */
-        .theme-toggle {{
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            font-size: 18px;
-            padding: 16px 20px;
-            cursor: pointer;
-            transition: color 0.2s ease;
-        }}
-
-        .theme-toggle:hover {{
-            color: var(--accent-color);
-        }}
-
-        /* Cards with modern styling */
-        .card {{
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            box-shadow: var(--shadow);
-            transition: all 0.2s ease;
-        }}
-
-        .card:hover {{
-            box-shadow: var(--shadow-hover);
-            border-color: var(--border-hover);
-        }}
-
-        .card-header {{
-            background-color: transparent;
-            border-bottom: 1px solid var(--card-border);
-            border-radius: 16px 16px 0 0 !important;
-            padding: 16px 20px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }}
-
-        .card-body {{
-            padding: 20px;
-        }}
-
-        /* Buttons styled like X */
-        .btn {{
-            border-radius: 20px;
-            font-weight: 700;
-            padding: 8px 16px;
-            transition: all 0.2s ease;
-        }}
-
-        .btn-primary {{
-            background-color: var(--accent-color);
-            border-color: var(--accent-color);
-            color: white;
-        }}
-
-        .btn-primary:hover {{
-            background-color: var(--accent-hover);
-            border-color: var(--accent-hover);
-            transform: translateY(-1px);
-        }}
-
-        .btn-outline-primary {{
-            border-color: var(--text-secondary);
-            color: var(--text-primary);
-        }}
-
-        .btn-outline-primary:hover {{
-            background-color: var(--accent-color);
-            border-color: var(--accent-color);
-            color: white;
-        }}
-
-        .btn-outline-secondary {{
-            border-color: var(--border-color);
-            color: var(--text-secondary);
-        }}
-
-        .btn-outline-secondary:hover {{
-            background-color: var(--bg-secondary);
-            border-color: var(--border-hover);
-            color: var(--text-primary);
-        }}
-
-        /* Form inputs */
-        .form-control {{
-            background-color: var(--input-bg) !important;
-            border: 1px solid var(--input-border) !important;
-            border-radius: 8px;
-            color: var(--text-primary) !important;
-            padding: 12px 16px;
-            transition: all 0.2s ease;
-        }}
-
-        input.form-control, textarea.form-control, select.form-control {{
-            color: var(--text-primary) !important;
-            background-color: var(--input-bg) !important;
-            border-color: var(--input-border) !important;
-        }}
-
-        [data-theme="dark"] input,
-        [data-theme="dark"] textarea,
-        [data-theme="dark"] select,
-        [data-theme="dark"] input.form-control,
-        [data-theme="dark"] textarea.form-control,
-        [data-theme="dark"] select.form-control {{
-            color: #ffffff !important;
-            background-color: #16181c !important;
-            border-color: #3d4043 !important;
-        }}
-
-        .form-control:focus {{
-            border-color: var(--accent-color);
-            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
-            background-color: var(--input-bg);
-        }}
-
-        .form-control::placeholder {{
-            color: var(--text-muted);
-        }}
-
-        .form-select {{
-            background-color: var(--input-bg) !important;
-            border: 1px solid var(--input-border) !important;
-            border-radius: 8px;
-            color: var(--text-primary) !important;
-            padding: 12px 16px;
-            transition: all 0.2s ease;
-        }}
-
-        [data-theme="dark"] .form-select {{
-            color: #ffffff !important;
-            background-color: #16181c !important;
-            border-color: #3d4043 !important;
-        }}
-
-        /* Alerts */
-        .alert {{
-            border-radius: 12px;
-            border: none;
-            padding: 16px 20px;
-        }}
-
-        .alert-info {{
-            background-color: rgba(29, 155, 240, 0.1);
-            color: var(--accent-color);
-        }}
-
-        /* Badges */
-        .badge {{
-            border-radius: 12px;
-            font-weight: 500;
-            padding: 4px 8px;
-        }}
-
-        /* Breadcrumbs */
-        .breadcrumb {{
-            background-color: transparent;
-            padding: 0;
-            margin-bottom: 20px;
-        }}
-
-        .breadcrumb-item a {{
-            color: var(--text-secondary);
-        }}
-
-        .breadcrumb-item.active {{
-            color: var(--text-primary);
-            font-weight: 500;
-        }}
-
-        /* Flash messages */
-        #flash-messages {{
-            position: fixed;
-            top: 70px;
-            right: 20px;
-            z-index: 1000;
-            max-width: 400px;
-        }}
-
-        .flash-message {{
-            margin-bottom: 10px;
-            padding: 12px 16px;
-            border-radius: 12px;
-            font-weight: 500;
-            box-shadow: var(--shadow);
-        }}
-
-        .flash-success {{
-            background-color: rgba(0, 186, 124, 0.1);
-            color: var(--success-color);
-            border: 1px solid rgba(0, 186, 124, 0.2);
-        }}
-
-        .flash-error {{
-            background-color: rgba(244, 33, 46, 0.1);
-            color: var(--error-color);
-            border: 1px solid rgba(244, 33, 46, 0.2);
-        }}
-
-        .flash-info {{
-            background-color: rgba(247, 181, 41, 0.1);
-            color: var(--warning-color);
-            border: 1px solid rgba(247, 181, 41, 0.2);
-        }}
-
-        /* Avatar styling */
-        .avatar {{
-            border-radius: 50%;
-            object-fit: cover;
-        }}
-
-        /* Wider content layout for better readability */
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            padding-left: 24px;
-            padding-right: 24px;
-        }}
-
-        /* Responsive adjustments */
-        @media (max-width: 768px) {{
-            .navbar-brand {{
-                font-size: 16px;
-                padding: 16px 15px;
-            }}
-
-            .nav-link {{
-                padding: 16px 12px;
-                font-size: 14px;
-            }}
-
-            .theme-toggle {{
-                padding: 16px 15px;
-            }}
-
-            .card {{
-                border-radius: 12px;
-            }}
-
-            .card-header {{
-                border-radius: 12px 12px 0 0 !important;
-            }}
-
-            .container {{
-                padding-left: 15px;
-                padding-right: 15px;
-            }}
-        }}
-
-        @media (min-width: 1200px) {{
-            .container {{
-                padding-left: 40px;
-                padding-right: 40px;
-            }}
-        }}
-
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {{
-            width: 8px;
-        }}
-
-        ::-webkit-scrollbar-track {{
-            background: var(--bg-secondary);
-        }}
-
-        ::-webkit-scrollbar-thumb {{
-            background: var(--border-color);
-            border-radius: 4px;
-        }}
-
-        ::-webkit-scrollbar-thumb:hover {{
-            background: var(--border-hover);
-        }}
-
-        /* Dropdown menu z-index fix - maximum priority to ensure it's above everything */
-        .dropdown-menu {{
-            z-index: 2147483647 !important; /* Maximum possible z-index value */
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            background-color: var(--card-bg);
-            margin-top: 8px;
-            overflow: visible !important;
-            position: absolute !important;
-            top: 100% !important;
-            left: 0 !important;
-            min-width: 200px;
-        }}
-
-        /* Ensure dropdown container doesn't clip */
-        .dropdown {{
-            position: relative !important;
-            overflow: visible !important;
-        }}
-
-        /* Prevent any parent from clipping the dropdown */
-        .navbar .dropdown {{
-            overflow: visible !important;
-        }}
-
-        /* Force dropdown to be on top of everything */
-        .navbar .dropdown-menu {{
-            z-index: 2147483647 !important;
-            position: absolute !important;
-            top: 100% !important;
-            left: 0 !important;
-        }}
-
-        .dropdown-item {{
-            color: var(--text-primary);
-            padding: 12px 16px;
-            transition: background-color 0.2s ease;
-        }}
-
-        .dropdown-item:hover {{
-            background-color: var(--bg-secondary);
-            color: var(--accent-color);
-        }}
-
-        .dropdown-toggle {{
-            border: none;
-            background: none;
-            color: var(--text-secondary);
-            font-weight: 500;
-            padding: 16px 12px;
-            border-radius: 8px;
-            transition: all 0.2s ease;
-        }}
-
-        .dropdown-toggle:hover {{
-            background-color: var(--bg-secondary);
-            color: var(--text-primary);
-        }}
-
-        .dropdown-toggle:focus {{
-            box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.1);
-        }}
+        .navbar-brand {{ font-weight: bold; }}
+        .avatar {{ font-size: 14px; }}
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <a class="navbar-brand" href="/">
-                <i class="fas fa-layer-group me-2"></i>
-                MLTF
-            </a>
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/doc/all/">
-                    <i class="fas fa-file-alt me-1"></i>Documents
-                </a>
-                <a class="nav-link" href="/group/">
-                    <i class="fas fa-users me-1"></i>Working Groups
-                </a>
-                <!-- <a class="nav-link" href="/meeting/">
-                    <i class="fas fa-calendar me-1"></i>Meetings
-                </a>
-                <a class="nav-link" href="/person/">
-                    <i class="fas fa-user-friends me-1"></i>People
-                </a> -->
-                <a class="nav-link" href="/submit/">
-                    <i class="fas fa-plus me-1"></i>Submit Draft
-                </a>
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
+                <a class="nav-link" href="/submit/">Submit Draft</a>
             </div>
             <div class="navbar-nav ms-auto">
                 {user_menu}
-                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
-                    <i class="fas fa-moon"></i>
-                </button>
             </div>
         </div>
     </nav>
-
     <div id="flash-messages"></div>
     {content}
-
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Theme switching functionality
-        const themeToggle = document.getElementById('theme-toggle');
-        const html = document.documentElement;
-        const icon = themeToggle.querySelector('i');
-
-        // Load saved theme - prefer user preference over localStorage
-        const userTheme = html.getAttribute('data-theme') || 'dark';
-        const savedTheme = userTheme !== 'light' && userTheme !== 'dark' && userTheme !== 'auto' ?
-            (localStorage.getItem('theme') || 'dark') : userTheme;
-        html.setAttribute('data-theme', savedTheme);
-        updateThemeIcon(savedTheme);
-
-        function updateThemeIcon(theme) {{
-            if (theme === 'dark') {{
-                icon.className = 'fas fa-sun';
-                themeToggle.title = 'Switch to light mode';
-            }} else {{
-                icon.className = 'fas fa-moon';
-                themeToggle.title = 'Switch to dark mode';
-            }}
-        }}
-
-        themeToggle.addEventListener('click', () => {{
-            const currentTheme = html.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            html.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            updateThemeIcon(newTheme);
-        }});
-
-        // Flash message auto-hide
-        setTimeout(() => {{
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(msg => {{
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 300);
-            }});
-        }}, 5000);
-    </script>
 </body>
 </html>
 """
@@ -1133,7 +310,7 @@ SUBMIT_TEMPLATE = """
     </nav>
     
     <h1>Submit Internet-Draft</h1>
-    <p class="lead">Submit a new Meta-Layer Draft to the MLTF datatracker</p>
+    <p class="lead">Submit a new Internet-Draft to the IETF datatracker</p>
     
     <div class="row">
         <div class="col-md-8">
@@ -1186,7 +363,7 @@ SUBMIT_TEMPLATE = """
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="terms" required>
                                 <label class="form-check-label" for="terms">
-                                    I agree to the <a href="#" target="_blank">MLTF submission terms</a>
+                                    I agree to the <a href="#" target="_blank">IETF submission terms</a>
                                 </label>
                             </div>
                         </div>
@@ -1210,7 +387,7 @@ SUBMIT_TEMPLATE = """
                     <ul class="small">
                         <li>PDF format preferred</li>
                         <li>Maximum 16MB file size</li>
-                        <li>Use standard MLTF formatting</li>
+                        <li>Use standard IETF formatting</li>
                     </ul>
                     
                     <h6>Content Requirements:</h6>
@@ -1218,7 +395,7 @@ SUBMIT_TEMPLATE = """
                         <li>Clear, descriptive title</li>
                         <li>Complete author information</li>
                         <li>Abstract describing the work</li>
-                        <li>Proper MLTF document structure</li>
+                        <li>Proper IETF document structure</li>
                     </ul>
                     
                     <h6>Review Process:</h6>
@@ -1235,77 +412,6 @@ SUBMIT_TEMPLATE = """
 </div>
 """
 
-@app.route('/submit/', methods=['GET', 'POST'])
-@require_auth
-def submit_draft():
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
-
-    # Generate working group options dynamically
-    group_options = '<option value="">Select a Working Group</option>'
-    for group in GROUPS:
-        group_options += f'<option value="{group["acronym"]}">{group["name"]}</option>'
-
-    # Replace the hardcoded options in the template
-    submit_template = SUBMIT_TEMPLATE.replace(
-        '''<option value="">Select a Working Group</option>
-                                <option value="httpbis">HTTP</option>
-                                <option value="quic">QUIC</option>
-                                <option value="tls">TLS</option>
-                                <option value="dnsop">DNSOP</option>
-                                <option value="rtgwg">RTGWG</option>''',
-        group_options
-    )
-
-    if request.method == 'POST':
-        # Handle form submission
-        title = request.form.get('title', '').strip()
-        authors = request.form.get('authors', '').strip()
-        abstract = request.form.get('abstract', '').strip()
-        group = request.form.get('group', '').strip()
-        file = request.files.get('file')
-
-        # Validation
-        if not title or not authors or not file:
-            flash('Title, authors, and file are required', 'error')
-            return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=submit_template)
-
-        # Process authors (comma-separated)
-        authors_list = [a.strip() for a in authors.split(',') if a.strip()]
-
-        # Generate submission ID (simple increment)
-        import random
-        import string
-        submission_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-
-        # Save file
-        filename = f"{submission_id}-{file.filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-
-        # Create submission record
-        submission = Submission(
-            id=submission_id,
-            title=title,
-            authors=authors_list,
-            abstract=abstract,
-            group=group,
-            filename=filename,
-            file_path=file_path,
-            submitted_by=get_current_user()['name']
-        )
-
-        db.session.add(submission)
-        db.session.commit()
-
-        # Log the action
-        add_to_document_history(f"draft-{submission_id}", "submitted", get_current_user()['name'], f"New draft submitted: {title}")
-
-        flash('Draft submitted successfully!', 'success')
-        return redirect(f'/submit/status/')
-
-    return BASE_TEMPLATE.format(title="Submit Internet-Draft - MLTF", theme=current_theme, user_menu=user_menu, content=submit_template)
-
 SUBMISSION_STATUS_TEMPLATE = """
 <div class="container mt-4">
     <nav aria-label="breadcrumb">
@@ -1318,8 +424,6 @@ SUBMISSION_STATUS_TEMPLATE = """
     
     <h1>Submission Status</h1>
     <p class="lead">Track your Internet-Draft submission</p>
-
-    <div id="flash-messages"></div>
     
     <div class="row">
         <div class="col-md-8">
@@ -1354,36 +458,10 @@ SUBMISSION_STATUS_TEMPLATE = """
                         <div class="col-sm-3"><strong>Submitted:</strong></div>
                         <div class="col-sm-9">{{ submission.submitted_at }}</div>
                     </div>
-                    <div class="row mb-3">
-                        <div class="col-sm-3"><strong>File:</strong></div>
-                        <div class="col-sm-9">
-                            <code>{{ submission.filename }}</code>
-                            <a href="/download/{{ submission.id }}" class="btn btn-sm btn-outline-primary ms-2">Download</a>
-                        </div>
-                    </div>
                     {% if submission.abstract %}
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Abstract:</strong></div>
                         <div class="col-sm-9">{{ submission.abstract }}</div>
-                    </div>
-                    {% endif %}
-
-                    <h6 class="mt-4">File Preview</h6>
-                    <div class="border rounded p-3" style="background-color: var(--input-bg); border-color: var(--input-border);">
-                        <pre class="mb-0" style="font-size: 0.9em; max-height: 400px; overflow-y: auto; color: var(--text-primary);">{{ file_content }}</pre>
-                    </div>
-
-                    {% if submission.status == 'submitted' and (current_user and (current_user.role in ['admin', 'editor'] or current_user.name in ['admin', 'Admin User'])) %}
-                    <div class="row mb-3">
-                        <div class="col-sm-3"><strong>Actions:</strong></div>
-                        <div class="col-sm-9">
-                            <form method="POST" action="/submit/approve/{{ submission.id }}" style="display: inline;">
-                                <button type="submit" class="btn btn-success btn-sm">Approve & Publish</button>
-                            </form>
-                            <form method="POST" action="/submit/reject/{{ submission.id }}" style="display: inline; margin-left: 10px;">
-                                <button type="submit" class="btn btn-danger btn-sm">Reject</button>
-                            </form>
-                        </div>
                     </div>
                     {% endif %}
                 </div>
@@ -1402,54 +480,27 @@ SUBMISSION_STATUS_TEMPLATE = """
                                 <p class="text-muted small">{{ submission.submitted_at }}</p>
                             </div>
                         </div>
-                        {% if submission.status in ['approved', 'rejected'] %}
-                        <div class="timeline-item">
-                            <div class="timeline-marker bg-success"></div>
-                            <div class="timeline-content">
-                                <h6>Initial Review</h6>
-                                <p class="text-muted small">
-                                    {{ 'Completed' if submission.status == 'approved' else 'Rejected' }}
-                                    {% if submission.approved_at %}
-                                    - {{ submission.approved_at }}
-                                    {% elif submission.rejected_at %}
-                                    - {{ submission.rejected_at }}
-                                    {% endif %}
-                                </p>
-                            </div>
-                        </div>
-                        {% else %}
                         <div class="timeline-item">
                             <div class="timeline-marker bg-secondary"></div>
                             <div class="timeline-content">
                                 <h6>Initial Review</h6>
-                                <p class="text-muted small">In Progress</p>
+                                <p class="text-muted small">Pending</p>
                             </div>
                         </div>
-                        {% endif %}
-                        {% if submission.status == 'approved' %}
                         <div class="timeline-item">
-                            <div class="timeline-marker bg-primary"></div>
-                            <div class="timeline-content">
-                                <h6>Published</h6>
-                                <p class="text-muted small">Available in document repository</p>
-                            </div>
-                        </div>
-                        {% else %}
-                        <div class="timeline-item">
-                            <div class="timeline-marker bg-secondary"></div>
+                            <div class="timeline-marker bg-light"></div>
                             <div class="timeline-content">
                                 <h6>Working Group Review</h6>
-                                <p class="text-muted small">Pending initial approval</p>
+                                <p class="text-muted small">Pending</p>
                             </div>
                         </div>
                         <div class="timeline-item">
-                            <div class="timeline-marker bg-secondary"></div>
+                            <div class="timeline-marker bg-light"></div>
                             <div class="timeline-content">
-                                <h6>MLSG Review</h6>
-                                <p class="text-muted small">Pending working group review</p>
+                                <h6>IESG Review</h6>
+                                <p class="text-muted small">Pending</p>
                             </div>
                         </div>
-                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -1475,8 +526,8 @@ SUBMISSION_STATUS_TEMPLATE = """
                     <p class="small">If you have questions about your submission:</p>
                     <ul class="small">
                         <li>Check the <a href="#" target="_blank">submission guidelines</a></li>
-                        <li>Contact the <a href="mailto:draft@metalayer.org">MLTF Secretariat</a></li>
-                        <li>Join the <a href="#" target="_blank">MLTF discussion list</a></li>
+                        <li>Contact the <a href="mailto:ietf-draft@ietf.org">IETF Secretariat</a></li>
+                        <li>Join the <a href="#" target="_blank">IETF discussion list</a></li>
                     </ul>
                 </div>
             </div>
@@ -1516,286 +567,6 @@ SUBMISSION_STATUS_TEMPLATE = """
 }
 </style>
 """
-
-@app.route('/submit/status/')
-@require_auth
-def submission_status():
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
-
-    # Get user's submissions
-    user_name = get_current_user()['name']
-    submissions = Submission.query.filter_by(submitted_by=user_name).order_by(Submission.submitted_at.desc()).all()
-
-    # Format submissions for template
-    submissions_html = ""
-    for submission in submissions:
-        status_badge = {
-            'submitted': 'badge bg-warning text-dark',
-            'approved': 'badge bg-success',
-            'rejected': 'badge bg-danger',
-            'published': 'badge bg-info'
-        }.get(submission.status, 'badge bg-secondary')
-
-        submissions_html += f"""
-        <div class="submission-item">
-            <div class="card mb-3">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h6 class="mb-0">
-                        <a href="/submit/status/{submission.id}/" class="text-decoration-none">
-                            {submission.title}
-                        </a>
-                    </h6>
-                    <span class="{status_badge}">{submission.status.title()}</span>
-                </div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-8">
-                            <p class="mb-2"><strong>Authors:</strong> {', '.join(submission.authors)}</p>
-                            <p class="mb-2"><strong>Group:</strong> {submission.group or 'None'}</p>
-                            <p class="mb-2"><strong>Submitted:</strong> {submission.submitted_at.strftime('%Y-%m-%d %H:%M')}</p>
-                            {f'<p class="mb-2"><strong>Abstract:</strong> {submission.abstract[:100]}...</p>' if submission.abstract else ''}
-                        </div>
-                        <div class="col-md-4 text-end">
-                            <a href="/submit/status/{submission.id}/" class="btn btn-sm btn-primary me-2">View Details</a>
-                            <a href="/doc/draft/{submission.id}/" class="btn btn-sm btn-outline-primary">View Draft</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """
-
-    content = f"""
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                <li class="breadcrumb-item"><a href="/submit/">Submit Draft</a></li>
-                <li class="breadcrumb-item active">My Submissions</li>
-            </ol>
-        </nav>
-
-        <h1>My Submissions</h1>
-
-        {f'<div class="alert alert-info">You have {len(submissions)} submission(s).</div>' if submissions else '<div class="alert alert-info">You have no submissions yet.</div>'}
-
-        {submissions_html}
-
-        <div class="mt-4">
-            <a href="/submit/" class="btn btn-primary">Submit Another Draft</a>
-            <a href="/" class="btn btn-secondary ms-2">Back to Home</a>
-        </div>
-    </div>
-    """
-
-    return BASE_TEMPLATE.format(title="My Submissions - MLTF", theme=current_theme, user_menu=user_menu, content=content)
-
-@app.route('/submit/status/<submission_id>/')
-@require_auth
-def submission_detail(submission_id):
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
-    current_user = get_current_user()
-
-    submission = Submission.query.filter_by(id=submission_id).first()
-    if not submission:
-        return "Submission not found", 404
-
-    # Check if user owns this submission or is admin
-    if submission.submitted_by != current_user['name'] and current_user.get('role') not in ['admin', 'editor']:
-        return "Access denied", 403
-
-    # Try to read file content for preview
-    file_content = "File preview not available"
-    if submission.file_path and os.path.exists(submission.file_path):
-        # Get file extension to determine how to handle preview
-        _, ext = os.path.splitext(submission.filename.lower())
-
-        try:
-            if ext in ['.txt', '.xml']:
-                # Text-based files can be previewed directly
-                with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
-                    # Limit preview to first 2000 characters
-                    if len(content) > 2000:
-                        file_content = content[:2000] + "..."
-                    else:
-                        file_content = content
-
-            elif ext == '.docx':
-                # Extract text from DOCX files
-                from docx import Document
-                doc = Document(submission.file_path)
-                content = ""
-                for paragraph in doc.paragraphs:
-                    if paragraph.text.strip():
-                        content += paragraph.text + "\n"
-
-                # Also check tables for content
-                for table in doc.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            if cell.text.strip():
-                                content += cell.text + "\n"
-
-                if content.strip():
-                    # Limit preview to first 2000 characters
-                    if len(content) > 2000:
-                        file_content = content[:2000] + "..."
-                    else:
-                        file_content = content
-                else:
-                    file_content = "DOCX file appears to be empty or contains no extractable text."
-
-            elif ext == '.pdf':
-                # Extract text from PDF files
-                from PyPDF2 import PdfReader
-                reader = PdfReader(submission.file_path)
-                content = ""
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text.strip():
-                        content += text + "\n"
-
-                if content.strip():
-                    # Clean up the text (remove excessive whitespace)
-                    import re
-                    content = re.sub(r'\n+', '\n', content)  # Remove multiple newlines
-                    content = re.sub(r' +', ' ', content)    # Remove multiple spaces
-
-                    # Limit preview to first 2000 characters
-                    if len(content) > 2000:
-                        file_content = content[:2000] + "..."
-                    else:
-                        file_content = content
-                else:
-                    file_content = "PDF file appears to be empty or contains no extractable text (may be image-based)."
-
-            elif ext == '.doc':
-                # Legacy DOC files - show file info
-                file_size = os.path.getsize(submission.file_path)
-                file_size_kb = file_size / 1024
-                file_content = f"Legacy DOC file ({file_size_kb:.1f} KB)\\nText extraction not supported for legacy .doc format.\\nPlease convert to .docx for text preview."
-
-            else:
-                # Unknown file type
-                file_size = os.path.getsize(submission.file_path)
-                file_size_kb = file_size / 1024
-                file_content = f"Unsupported file type: {ext} ({file_size_kb:.1f} KB)\\nPreview not available."
-
-        except Exception as e:
-            file_size = os.path.getsize(submission.file_path)
-            file_size_kb = file_size / 1024
-            file_content = f"Error extracting text from {ext[1:].upper()} file ({file_size_kb:.1f} KB): {str(e)}"
-
-    # Start with template and do all replacements
-    content = SUBMISSION_STATUS_TEMPLATE
-
-    # First, handle abstract conditional
-    import re
-    if submission.abstract:
-        content = re.sub(
-            r'{% if submission\.abstract %}(.*?){% endif %}',
-            r'\1',
-            content,
-            flags=re.DOTALL
-        )
-    else:
-        content = re.sub(r'{% if submission\.abstract %}.*?{% endif %}', '', content, flags=re.DOTALL)
-
-    # Handle admin actions
-    if current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']):
-        # Replace the entire conditional block with the actions content
-        admin_actions_pattern = r'{% if submission\.status == \'submitted\' and \(current_user and \(current_user\.role in \[\'admin\', \'editor\'\] or current_user\.name in \[\'admin\', \'Admin User\'\]\)\) %}(.*?){% endif %}'
-        admin_actions_replacement = r'''<div class="row mb-3">
-                        <div class="col-sm-3"><strong>Actions:</strong></div>
-                        <div class="col-sm-9">
-                            <form method="POST" action="/submit/approve/''' + str(submission.id) + r'''" style="display: inline;">
-                                <button type="submit" class="btn btn-success btn-sm">Approve & Publish</button>
-                            </form>
-                            <form method="POST" action="/submit/reject/''' + str(submission.id) + r'''" style="display: inline; margin-left: 10px;">
-                                <button type="submit" class="btn btn-danger btn-sm">Reject</button>
-                            </form>
-                        </div>
-                    </div>'''
-        content = re.sub(admin_actions_pattern, admin_actions_replacement, content, flags=re.DOTALL)
-    else:
-        # Remove admin sections for regular users
-        content = re.sub(r'{% if submission\.status == \'submitted\' and .*?%}.*?{% endif %}', '', content, flags=re.DOTALL)
-
-    # Handle status conditionals - replace entire conditional blocks
-    if submission.status in ['approved', 'rejected']:
-        # Show completed/rejected timeline item
-        initial_review_pattern = r'{% if submission\.status in \[\'approved\', \'rejected\'\] %}(.*?){% else %}(.*?){% endif %}'
-        initial_review_replacement = r'''\1'''
-        content = re.sub(initial_review_pattern, initial_review_replacement, content, flags=re.DOTALL)
-    else:
-        # Show in progress timeline item
-        initial_review_pattern = r'{% if submission\.status in \[\'approved\', \'rejected\'\] %}(.*?){% else %}(.*?){% endif %}'
-        initial_review_replacement = r'''\2'''
-        content = re.sub(initial_review_pattern, initial_review_replacement, content, flags=re.DOTALL)
-
-    # Handle nested conditionals in timeline BEFORE placeholder replacements
-    if submission.approved_at:
-        content = content.replace('{% if submission.approved_at %}', '')
-        content = content.replace('- {{ submission.approved_at }}', f'- {submission.approved_at.strftime("%Y-%m-%d %H:%M:%S")}')
-        content = content.replace('{% elif submission.rejected_at %}', '')
-        content = content.replace('- {{ submission.rejected_at }}', '')
-        content = content.replace('{% endif %}', '')
-    elif submission.rejected_at:
-        content = content.replace('{% if submission.approved_at %}', '')
-        content = content.replace('- {{ submission.approved_at }}', '')
-        content = content.replace('{% elif submission.rejected_at %}', '')
-        content = content.replace('- {{ submission.rejected_at }}', f'- {submission.rejected_at.strftime("%Y-%m-%d %H:%M:%S")}')
-        content = content.replace('{% endif %}', '')
-    else:
-        content = content.replace('{% if submission.approved_at %}', '')
-        content = content.replace('- {{ submission.approved_at }}', '')
-        content = content.replace('{% elif submission.rejected_at %}', '')
-        content = content.replace('- {{ submission.rejected_at }}', '')
-        content = content.replace('{% endif %}', '')
-
-    if submission.status == 'approved':
-        # Show published timeline item, hide pending items
-        published_pattern = r'{% if submission\.status == \'approved\' %}(.*?){% else %}(.*?){% endif %}'
-        published_replacement = r'''\1'''
-        content = re.sub(published_pattern, published_replacement, content, flags=re.DOTALL)
-    else:
-        # Hide published item, show pending items
-        published_pattern = r'{% if submission\.status == \'approved\' %}(.*?){% else %}(.*?){% endif %}'
-        published_replacement = r'''\2'''
-        content = re.sub(published_pattern, published_replacement, content, flags=re.DOTALL)
-
-    # NOW do placeholder replacement after conditionals are processed
-    content = content.replace(
-        '{{ submission.id }}', str(submission.id or '')
-    ).replace(
-        '{{ submission.status.title() }}', str(submission.status.title() or '')
-    ).replace(
-        '{{ submission.title }}', str(submission.title or '')
-    ).replace(
-        '{{ submission.abstract }}', str(submission.abstract or '')
-    ).replace(
-        '{{ submission.authors | join(\', \') }}', str(', '.join(submission.authors) or '')
-    ).replace(
-        '{{ submission.draft_name }}', str(getattr(submission, 'draft_name', submission.id) or '')
-    ).replace(
-        '{{ submission.submitted_at }}', str(submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if submission.submitted_at else '')
-    ).replace(
-        '{{ submission.filename }}', str(submission.filename or '')
-    ).replace(
-        '{{ file_content }}', str(file_content or '')
-    ).replace(
-        '{{ submission.approved_at }}', str(submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else '')
-    ).replace(
-        '{{ submission.rejected_at }}', str(submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else '')
-    ).replace(
-        '{{ \'Completed\' if submission.status == \'approved\' else \'Rejected\' }}', 'Completed' if submission.status == 'approved' else 'Rejected'
-    )
-
-
-    return BASE_TEMPLATE.format(title=f"Submission {submission.id} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
 LOGIN_TEMPLATE = """
 <div class="container mt-4">
@@ -1923,24 +694,6 @@ PROFILE_TEMPLATE = """
                         </div>
                         <button type="submit" class="btn btn-warning">Change Password</button>
                     </form>
-
-                    <hr>
-
-                    <!-- Theme Preferences -->
-                    <h5>Theme Preferences</h5>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="update_theme">
-                        <div class="mb-3">
-                            <label class="form-label">Preferred Theme</label>
-                            <select class="form-select" name="theme" id="theme-select">
-                                <option value="light" {light_selected}>Light Mode</option>
-                                <option value="dark" {dark_selected}>Dark Mode</option>
-                                <option value="auto" {auto_selected}>Auto (System)</option>
-                            </select>
-                            <div class="form-text">Choose your preferred theme. Auto will follow your system's preference.</div>
-                        </div>
-                        <button type="submit" class="btn btn-secondary">Save Theme Preference</button>
-                    </form>
                 </div>
             </div>
         </div>
@@ -1970,15 +723,9 @@ def login():
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
         
-        user = User.query.filter_by(username=username).first()
-        if user and check_password_hash(user.password_hash, password):
+        if username in USERS and USERS[username]['password'] == password:
             session['user'] = username
-            # Set user's preferred theme in session
-            session['theme'] = user.theme
-            # Update last login
-            user.last_login = datetime.utcnow()
-            db.session.commit()
-            flash(f'Welcome back, {user.name}!', 'success')
+            flash(f'Welcome back, {USERS[username]["name"]}!', 'success')
             return redirect(url_for('home'))
         else:
             flash('Invalid username or password.', 'error')
@@ -1989,7 +736,7 @@ def login():
         <a class="nav-link" href="/register/">Register</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Login - MLTF", theme="light", user_menu=user_menu, content=LOGIN_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Login - IETF Datatracker", user_menu=user_menu, content=LOGIN_TEMPLATE))
 
 @app.route('/logout/')
 def logout():
@@ -2007,28 +754,16 @@ def register():
         name = request.form.get('name', '').strip()
         email = request.form.get('email', '').strip()
         
-        # Check if username or email already exists
-        existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
-        if existing_user:
-            if existing_user.username == username:
-                flash('Username already exists.', 'error')
-            else:
-                flash('Email already registered.', 'error')
+        if username in USERS:
+            flash('Username already exists.', 'error')
         elif len(password) < 6:
             flash('Password must be at least 6 characters.', 'error')
         else:
-            # Create new user in database
-            new_user = User(
-                username=username,
-                password_hash=generate_password_hash(password),
-                name=name,
-                email=email,
-                role='user',  # Default role
-                theme='dark'  # Default theme
-            )
-            db.session.add(new_user)
-            db.session.commit()
-
+            USERS[username] = {
+                'password': password,
+                'name': name,
+                'email': email
+            }
             session['user'] = username
             flash(f'Account created successfully! Welcome, {name}!', 'success')
             return redirect(url_for('home'))
@@ -2039,7 +774,7 @@ def register():
         <a class="nav-link" href="/login/">Sign In</a>
     </div>
     """
-    return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF", theme="light", user_menu=user_menu, content=REGISTER_TEMPLATE))
+    return render_template_string(BASE_TEMPLATE.format(title="Register - IETF Datatracker", user_menu=user_menu, content=REGISTER_TEMPLATE))
 
 @app.route('/profile/', methods=['GET', 'POST'])
 @require_auth
@@ -2049,16 +784,13 @@ def profile():
     
     if request.method == 'POST':
         action = request.form.get('action')
-        user = User.query.filter_by(username=session['user']).first()
-
         if action == 'update_password':
             old_password = request.form.get('old_password', '').strip()
             new_password = request.form.get('new_password', '').strip()
             
-            if check_password_hash(user.password_hash, old_password):
+            if USERS[session['user']]['password'] == old_password:
                 if len(new_password) >= 6:
-                    user.password_hash = generate_password_hash(new_password)
-                    db.session.commit()
+                    USERS[session['user']]['password'] = new_password
                     flash('Password updated successfully!', 'success')
                 else:
                     flash('New password must be at least 6 characters.', 'error')
@@ -2069,280 +801,209 @@ def profile():
             name = request.form.get('name', '').strip()
             email = request.form.get('email', '').strip()
             
-            # Check if email is already taken by another user
-            existing_email = User.query.filter(User.email == email, User.username != session['user']).first()
-            if existing_email:
-                flash('Email already registered to another account.', 'error')
-            else:
-                if name:
-                    user.name = name
-                if email:
-                    user.email = email
-                db.session.commit()
-                flash('Profile updated successfully!', 'success')
-
-        elif action == 'update_theme':
-            theme = request.form.get('theme', 'dark').strip()
-            if theme in ['light', 'dark', 'auto']:
-                user.theme = theme
-                db.session.commit()
-                session['theme'] = theme  # Update session immediately
-                flash('Theme preference updated successfully!', 'success')
-            else:
-                flash('Invalid theme selection.', 'error')
+            if name:
+                USERS[session['user']]['name'] = name
+            if email:
+                USERS[session['user']]['email'] = email
+            flash('Profile updated successfully!', 'success')
     
     # Generate user menu
-    user_menu = generate_user_menu()
-    
-    current_theme = current_user.get('theme', 'dark')
-    light_selected = 'selected' if current_theme == 'light' else ''
-    dark_selected = 'selected' if current_theme == 'dark' else ''
-    auto_selected = 'selected' if current_theme == 'auto' else ''
+    user_menu = f"""
+    <div class="nav-item dropdown">
+        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+            {current_user['name']}
+        </a>
+        <ul class="dropdown-menu">
+            <li><a class="dropdown-item" href="/profile/">Profile</a></li>
+            <li><a class="dropdown-item" href="/logout/">Logout</a></li>
+        </ul>
+    </div>
+    """
     
     profile_content = PROFILE_TEMPLATE.format(
         current_user_name=current_user['name'],
         current_user_email=current_user['email'],
-        current_user_theme=current_theme,
-        light_selected=light_selected,
-        dark_selected=dark_selected,
-        auto_selected=auto_selected,
         session_user=session['user']
     )
-    return render_template_string(BASE_TEMPLATE.format(title="Profile - MLTF", theme=current_theme, user_menu=user_menu, content=profile_content))
+    return render_template_string(BASE_TEMPLATE.format(title="Profile - IETF Datatracker", user_menu=user_menu, content=profile_content))
 
 @app.route('/admin/')
 @require_role('admin')
 def admin_dashboard():
-    user_menu = generate_user_menu()
+    current_user = get_current_user()
+    current_theme = current_user.get('theme', 'dark') if current_user else 'dark'
 
-    # Enhanced admin statistics
-    total_users = User.query.count()
-    total_groups = len(GROUPS)
-    total_submissions = Submission.query.count()
-    approved_drafts = PublishedDraft.query.count()
-    pending_chairs = WorkingGroupChair.query.filter_by(approved=False).count()
+    # Generate user menu
+    user_menu = f"""
+    <div class="nav-item dropdown">
+        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+            {current_user['name'] if current_user else 'Admin'}
+        </a>
+        <ul class="dropdown-menu">
+            <li><a class="dropdown-item" href="/profile/">Profile</a></li>
+            <li><a class="dropdown-item" href="/logout/">Logout</a></li>
+        </ul>
+    </div>
+    """
 
-    # Recent activity and alerts
-    pending_submissions = Submission.query.filter_by(status='submitted').count()
-    recent_submissions = Submission.query.order_by(Submission.submitted_at.desc()).limit(5).all()
-    recent_users = User.query.order_by(User.created_at.desc()).limit(5).all()
+    # Get statistics
+    total_users = len(USERS)
+    total_submissions = len(SUBMISSIONS)
+    total_drafts = len(DRAFTS)
+    pending_chairs = len([c for c in WORKING_GROUP_CHAIRS.values() if not c['approved']])
+    total_chairs = len(WORKING_GROUP_CHAIRS)
+    approved_chairs = len([c for c in WORKING_GROUP_CHAIRS.values() if c['approved']])
 
-    # Get most active drafts (by comment count or views if we had them)
-    # For now, just show recent submissions as proxy
-    active_drafts = Submission.query.order_by(Submission.submitted_at.desc()).limit(10).all()
-
-    # Most active users (by login frequency - simplified)
-    active_users = User.query.order_by(User.last_login.desc()).limit(10).all()
-
-    # Build recent activity feed
-    activity_html = ""
-    for submission in recent_submissions[:3]:  # Show last 3 submissions
-        activity_html += f"""
-        <div class="activity-item mb-2">
-            <small class="text-muted">
-                <i class="fas fa-file-alt me-1"></i>
-                New submission: <strong>{submission.title[:50]}...</strong>
-                by {submission.submitted_by}
-                <span class="float-end">{submission.submitted_at.strftime('%m/%d %H:%M')}</span>
-            </small>
-        </div>
-        """
-
-    for user in recent_users[:2]:  # Show last 2 new users
-        activity_html += f"""
-        <div class="activity-item mb-2">
-            <small class="text-muted">
-                <i class="fas fa-user-plus me-1"></i>
-                New user: <strong>{user.name}</strong> ({user.email})
-                <span class="float-end">{user.created_at.strftime('%m/%d %H:%M')}</span>
-            </small>
-        </div>
-        """
-
-    # Build alerts section
-    alerts_html = ""
-    if pending_submissions > 0:
-        alerts_html += f"""
-        <div class="alert alert-warning alert-dismissible fade show" role="alert">
-            <i class="fas fa-exclamation-triangle me-2"></i>
-            <strong>{pending_submissions}</strong> draft submission(s) pending review
-            <a href="/admin/submissions/" class="alert-link">Review now</a>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-        """
-
-    if pending_chairs > 0:
-        alerts_html += f"""
-        <div class="alert alert-info alert-dismissible fade show" role="alert">
-            <i class="fas fa-users me-2"></i>
-            <strong>{pending_chairs}</strong> working group chair(s) pending approval
-            <a href="/group/" class="alert-link">Manage chairs</a>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-        """
+    # Recent activity
+    recent_submissions = sorted(SUBMISSIONS.values(), key=lambda x: x['submitted_at'], reverse=True)[:5]
+    # For users, we'll just show the first 5 (since we don't have creation dates in the simple dict)
+    recent_users = list(USERS.keys())[:5]
 
     content = f"""
     <div class="container mt-4">
-        <!-- Alerts Section -->
-        <div id="admin-alerts" class="mb-4">
-            {alerts_html}
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h1 class="mb-1">Admin Dashboard</h1>
+                <p class="text-muted mb-0">Manage MLTF system and content</p>
+            </div>
         </div>
 
+        <!-- Statistics Cards -->
+        <div class="row mb-4">
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-primary">{total_users}</h4>
+                        <small class="text-muted">Users</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-success">{total_submissions}</h4>
+                        <small class="text-muted">Submissions</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-info">{total_drafts}</h4>
+                        <small class="text-muted">Drafts</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-warning">{total_chairs}</h4>
+                        <small class="text-muted">Chairs</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-success">{approved_chairs}</h4>
+                        <small class="text-muted">Active Chairs</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-danger">{pending_chairs}</h4>
+                        <small class="text-muted">Pending Chairs</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Management Cards -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <i class="fas fa-users-cog fa-3x text-primary mb-3"></i>
+                        <h5>User Management</h5>
+                        <p class="text-muted small">Manage user accounts, roles, and permissions</p>
+                        <a href="/admin/users/" class="btn btn-outline-primary btn-sm">Manage Users</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <i class="fas fa-user-tie fa-3x text-success mb-3"></i>
+                        <h5>Chair Management</h5>
+                        <p class="text-muted small">Manage working group chairs and approvals</p>
+                        <a href="/admin/chairs/" class="btn btn-outline-success btn-sm">Manage Chairs</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <i class="fas fa-file-alt fa-3x text-info mb-3"></i>
+                        <h5>Submission Management</h5>
+                        <p class="text-muted small">Review and manage draft submissions</p>
+                        <a href="/admin/submissions/" class="btn btn-outline-info btn-sm">Manage Submissions</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <i class="fas fa-chart-bar fa-3x text-warning mb-3"></i>
+                        <h5>Analytics</h5>
+                        <p class="text-muted small">View system analytics and reports</p>
+                        <a href="/admin/analytics/" class="btn btn-outline-warning btn-sm">View Analytics</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Activity -->
         <div class="row">
-            <div class="col-12">
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h1>Admin Dashboard</h1>
-                    <div>
-                        <a href="/admin/users/" class="btn btn-outline-primary me-2">Manage Users</a>
-                        <a href="/admin/submissions/" class="btn btn-outline-success">Review Submissions</a>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Recent Submissions</h5>
                     </div>
-                </div>
-
-                <!-- Statistics Cards -->
-                <div class="row mb-4">
-                    <div class="col-md-2">
-                        <div class="card h-100">
-                            <div class="card-body text-center">
-                                <h4 class="text-primary mb-1">{total_users}</h4>
-                                <p class="mb-0 small">Total Users</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-2">
-                        <div class="card h-100">
-                            <div class="card-body text-center">
-                                <h4 class="text-success mb-1">{total_groups}</h4>
-                                <p class="mb-0 small">Working Groups</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-2">
-                        <div class="card h-100">
-                            <div class="card-body text-center">
-                                <h4 class="text-warning mb-1">{total_submissions}</h4>
-                                <p class="mb-0 small">Total Submissions</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-2">
-                        <div class="card h-100">
-                            <div class="card-body text-center">
-                                <h4 class="text-info mb-1">{approved_drafts}</h4>
-                                <p class="mb-0 small">Published Drafts</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-2">
-                        <div class="card h-100">
-                            <div class="card-body text-center">
-                                <h4 class="text-danger mb-1">{pending_submissions}</h4>
-                                <p class="mb-0 small">Pending Review</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-2">
-                        <div class="card h-100">
-                            <div class="card-body text-center">
-                                <h4 class="text-secondary mb-1">{pending_chairs}</h4>
-                                <p class="mb-0 small">Pending Chairs</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="row">
-                    <!-- Recent Activity -->
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h5 class="mb-0">Recent Activity</h5>
-                                <span class="badge bg-primary">Live</span>
-                            </div>
-                            <div class="card-body">
-                                {activity_html}
-                                <hr>
-                                <a href="/admin/activity/" class="btn btn-sm btn-outline-primary">View All Activity</a>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Quick Actions -->
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Quick Actions</h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="d-grid gap-2">
-                                    <a href="/admin/submissions/" class="btn btn-success">
-                                        <i class="fas fa-check-circle me-2"></i>Review Submissions ({pending_submissions} pending)
-                                    </a>
-                                    <a href="/admin/users/" class="btn btn-primary">
-                                        <i class="fas fa-users me-2"></i>Manage Users ({total_users} total)
-                                    </a>
-                                    <a href="/group/" class="btn btn-info">
-                                        <i class="fas fa-users-cog me-2"></i>Manage Working Groups ({pending_chairs} pending chairs)
-                                    </a>
-                                    <a href="/admin/analytics/" class="btn btn-secondary">
-                                        <i class="fas fa-chart-bar me-2"></i>View Analytics
-                                    </a>
+                    <div class="card-body p-0">
+                        <div class="list-group list-group-flush">
+                            {"".join([f'''
+                            <a href="/submit/status/{s['id']}/" class="list-group-item list-group-item-action">
+                                <div class="d-flex w-100 justify-content-between">
+                                    <h6 class="mb-1">{s['title'][:50]}{"..." if len(s['title']) > 50 else ""}</h6>
+                                    <small>{s['submitted_at'].strftime("%m/%d")}</small>
                                 </div>
-                            </div>
+                                <p class="mb-1">{", ".join(s['authors'][:2])}{"..." if len(s['authors']) > 2 else ""}</p>
+                                <small class="text-muted">{s.get('group', 'No group')} • <span class="badge bg-{ "warning" if s['status'] == "submitted" else "success" if s['status'] == "approved" else "info"}">{s['status']}</span></small>
+                            </a>
+                            ''' for s in recent_submissions])}
                         </div>
                     </div>
                 </div>
-
-                <!-- Content Management Section -->
-                <div class="row mt-4">
-                    <div class="col-12">
-                        <h3 class="mb-3">Content Management</h3>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Recent Users</h5>
                     </div>
-                </div>
-
-                <div class="row">
-                    <!-- Most Active Drafts -->
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Recent Draft Submissions</h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="list-group list-group-flush">
-                                    {"".join([f'''
-                                    <a href="/doc/draft/{draft.id}/" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
-                                        <div>
-                                            <strong>{draft.title[:40]}...</strong>
-                                            <br><small class="text-muted">by {draft.submitted_by} • {draft.submitted_at.strftime('%m/%d')}</small>
-                                        </div>
-                                        <span class="badge bg-{'warning' if draft.status == 'submitted' else 'success'}">{draft.status}</span>
-                                    </a>
-                                    ''' for draft in active_drafts[:5]])}
+                    <div class="card-body p-0">
+                        <div class="list-group list-group-flush">
+                            {"".join([f'''
+                            <div class="list-group-item">
+                                <div class="d-flex w-100 justify-content-between">
+                                    <h6 class="mb-1">{USERS[u]['name']}</h6>
+                                    <small>N/A</small>
                                 </div>
+                                <p class="mb-1">{USERS[u]['email']}</p>
+                                <small class="text-muted"><span class="badge bg-secondary">{USERS[u].get('role', 'user')}</span></small>
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- Active Users -->
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Recent User Activity</h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="list-group list-group-flush">
-                                    {"".join([f'''
-                                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                                        <div>
-                                            <strong>{user.name}</strong>
-                                            <br><small class="text-muted">{user.email} • {user.role}</small>
-                                        </div>
-                                        <small class="text-muted">
-                                            {user.last_login.strftime('%m/%d %H:%M') if user.last_login else 'Never logged in'}
-                                        </small>
-                                    </div>
-                                    ''' for user in active_users[:5]])}
-                                </div>
-                            </div>
+                            ''' for u in recent_users])}
                         </div>
                     </div>
                 </div>
@@ -2353,876 +1014,798 @@ def admin_dashboard():
 
     return BASE_TEMPLATE.format(
         title="Admin Dashboard - MLTF",
-        theme=get_current_user().get('theme', 'dark'),
-        content=content,
-        user_menu=user_menu
+        theme=current_theme,
+        user_menu=user_menu,
+        content=content
     )
 
-@app.route('/admin/users/')
+@app.route('/admin/chairs/')
 @require_role('admin')
-def admin_users():
-    user_menu = generate_user_menu()
-    current_theme = get_current_user().get('theme', 'dark')
+def admin_chairs():
+    current_user = get_current_user()
+    current_theme = current_user.get('theme', 'dark') if current_user else 'dark'
 
-    # Get all users with pagination
+    # Generate user menu
+    user_menu = f"""
+    <div class="nav-item dropdown">
+        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+            {current_user['name'] if current_user else 'Admin'}
+        </a>
+        <ul class="dropdown-menu">
+            <li><a class="dropdown-item" href="/profile/">Profile</a></li>
+            <li><a class="dropdown-item" href="/logout/">Logout</a></li>
+        </ul>
+    </div>
+    """
+
+    # Get filter parameters
+    search_query = request.args.get('q', '').strip()
+    group_filter = request.args.get('group', '').strip()
+    status_filter = request.args.get('status', '').strip()
     page = request.args.get('page', 1, type=int)
     per_page = 20
-    search = request.args.get('search', '').strip()
-    role_filter = request.args.get('role', '')
 
-    query = User.query
+    # Get all chairs from memory
+    all_chairs = []
+    for chair_id, chair_data in WORKING_GROUP_CHAIRS.items():
+        chair_data['id'] = chair_id
+        all_chairs.append(chair_data)
 
-    if search:
-        query = query.filter(
-            db.or_(
-                User.username.contains(search),
-                User.name.contains(search),
-                User.email.contains(search)
-            )
-        )
+    # Apply filters
+    if search_query:
+        all_chairs = [c for c in all_chairs if
+                     search_query.lower() in c['chair_name'].lower() or
+                     search_query.lower() in (c.get('chair_email', '') or '').lower()]
 
-    if role_filter:
-        query = query.filter_by(role=role_filter)
+    if group_filter:
+        all_chairs = [c for c in all_chairs if c['group_acronym'] == group_filter]
 
-    users = query.order_by(User.created_at.desc()).paginate(page=page, per_page=per_page, error_out=False)
-    total_users = query.count()
+    if status_filter:
+        if status_filter == 'approved':
+            all_chairs = [c for c in all_chairs if c['approved']]
+        elif status_filter == 'pending':
+            all_chairs = [c for c in all_chairs if not c['approved']]
 
-    # Build user rows
-    user_rows = ""
-    for user in users.items:
-        role_badge = {
-            'admin': 'badge bg-danger',
-            'editor': 'badge bg-warning',
-            'user': 'badge bg-secondary'
-        }.get(user.role, 'badge bg-secondary')
+    # Get statistics
+    total_chairs = len(WORKING_GROUP_CHAIRS)
+    approved_chairs = len([c for c in WORKING_GROUP_CHAIRS.values() if c['approved']])
+    pending_chairs = total_chairs - approved_chairs
 
-        last_login = user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never'
+    # Get unique groups for filter dropdown
+    group_options = list(set(c['group_acronym'] for c in WORKING_GROUP_CHAIRS.values()))
 
-        user_rows += f"""
+    # Sort and paginate
+    all_chairs.sort(key=lambda x: x['set_at'], reverse=True)
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    chairs_page = all_chairs[start_idx:end_idx]
+
+    # Create a mock pagination object
+    class MockPagination:
+        def __init__(self, items, page, per_page, total):
+            self.items = items
+            self.page = page
+            self.per_page = per_page
+            self.total = total
+            self.pages = (total + per_page - 1) // per_page
+
+        @property
+        def has_prev(self):
+            return self.page > 1
+
+        @property
+        def has_next(self):
+            return self.page < self.pages
+
+        @property
+        def prev_num(self):
+            return self.page - 1
+
+        @property
+        def next_num(self):
+            return self.page + 1
+
+        def iter_pages(self):
+            # Simple page iteration
+            start_page = max(1, self.page - 2)
+            end_page = min(self.pages, self.page + 2)
+            for p in range(start_page, end_page + 1):
+                yield p
+
+    chairs = MockPagination(chairs_page, page, per_page, len(all_chairs))
+
+    # Build chair rows
+    chair_rows = ""
+    for chair in chairs.items:
+        status_badge = 'success' if chair['approved'] else 'warning'
+        status_text = 'Active' if chair['approved'] else 'Pending'
+        actions = f"""
+        <div class="btn-group btn-group-sm">
+            <button class="btn btn-outline-primary btn-sm" onclick="editChair({chair['id']})" title="Edit Chair">
+                <i class="fas fa-edit"></i>
+            </button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="transferChair({chair['id']})" title="Transfer to Another Group">
+                <i class="fas fa-exchange-alt"></i>
+            </button>
+            {'<button class="btn btn-outline-success btn-sm" onclick="approveChair(' + str(chair['id']) + ')" title="Approve Chair"><i class="fas fa-check"></i></button>' if not chair['approved'] else ''}
+            <button class="btn btn-outline-danger btn-sm" onclick="deleteChair({chair['id']})" title="Remove Chair">
+                <i class="fas fa-trash"></i>
+            </button>
+        </div>
+        """
+        chair_rows += f"""
         <tr>
             <td>
-                <strong>{user.name}</strong><br>
-                <small class="text-muted">@{user.username}</small>
+                <input type="checkbox" class="chair-checkbox" value="{chair['id']}" onchange="updateBulkActions()">
             </td>
-            <td>{user.email}</td>
-            <td><span class="{role_badge}">{user.role.title()}</span></td>
-            <td>{user.theme.title()}</td>
-            <td>{user.created_at.strftime('%Y-%m-%d')}</td>
-            <td>{last_login}</td>
-            <td>
-                <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary btn-sm" onclick="changeRole('{user.username}', '{user.role}')">
-                        <i class="fas fa-user-edit"></i>
-                    </button>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteUser('{user.username}')">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            </td>
+            <td>{chair['chair_name']}</td>
+            <td>{chair.get('chair_email', 'N/A') or 'N/A'}</td>
+            <td><code>{chair['group_acronym']}</code></td>
+            <td><span class="badge bg-{status_badge}">{status_text}</span></td>
+            <td>{chair['set_at'].strftime('%Y-%m-%d')}</td>
+            <td>{actions}</td>
         </tr>
         """
 
-    # Role filter options
-    role_options = f"""
-    <option value="">All Roles</option>
-    <option value="admin" {'selected' if role_filter == 'admin' else ''}>Admin</option>
-    <option value="editor" {'selected' if role_filter == 'editor' else ''}>Editor</option>
-    <option value="user" {'selected' if role_filter == 'user' else ''}>User</option>
-    """
+    # Build pagination
+    pagination = ""
+    if chairs.pages > 1:
+        pagination = '<nav><ul class="pagination justify-content-center">'
+
+        # Previous
+        if chairs.has_prev:
+            pagination += f'<li class="page-item"><a class="page-link" href="?page={chairs.prev_num}&q={search_query}&group={group_filter}&status={status_filter}">Previous</a></li>'
+        else:
+            pagination += '<li class="page-item disabled"><span class="page-link">Previous</span></li>'
+
+        # Page numbers
+        for page_num in chairs.iter_pages():
+            if page_num:
+                active_class = 'active' if page_num == chairs.page else ''
+                pagination += f'<li class="page-item {active_class}"><a class="page-link" href="?page={page_num}&q={search_query}&group={group_filter}&status={status_filter}">{page_num}</a></li>'
+            else:
+                pagination += '<li class="page-item disabled"><span class="page-link">...</span></li>'
+
+        # Next
+        if chairs.has_next:
+            pagination += f'<li class="page-item"><a class="page-link" href="?page={chairs.next_num}&q={search_query}&group={group_filter}&status={status_filter}">Next</a></li>'
+        else:
+            pagination += '<li class="page-item disabled"><span class="page-link">Next</span></li>'
+
+        pagination += '</ul></nav>'
 
     content = f"""
     <div class="container mt-4">
         <nav aria-label="breadcrumb">
             <ol class="breadcrumb">
                 <li class="breadcrumb-item"><a href="/admin/">Admin Dashboard</a></li>
-                <li class="breadcrumb-item active">User Management</li>
+                <li class="breadcrumb-item active">Chair Management</li>
             </ol>
         </nav>
 
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1>User Management</h1>
             <div>
-                <span class="badge bg-info me-2">Total: {total_users} users</span>
+                <h1 class="mb-1">Chair Management</h1>
+                <p class="text-muted mb-0">Manage working group chairs across all groups</p>
+            </div>
+            <button class="btn btn-primary" onclick="addNewChair()">
+                <i class="fas fa-plus me-2"></i>Add New Chair
+            </button>
+        </div>
+
+        <!-- Statistics Cards -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-primary">{total_chairs}</h4>
+                        <small class="text-muted">Total Chairs</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-success">{approved_chairs}</h4>
+                        <small class="text-muted">Active Chairs</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-warning">{pending_chairs}</h4>
+                        <small class="text-muted">Pending Approval</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <h4 class="text-info">{len(group_options)}</h4>
+                        <small class="text-muted">Working Groups</small>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- Filters and Search -->
+        <!-- Filters -->
         <div class="card mb-4">
             <div class="card-body">
                 <form method="GET" class="row g-3">
-                    <div class="col-md-6">
-                        <label for="search" class="form-label">Search Users</label>
-                        <input type="text" class="form-control" id="search" name="search"
-                               value="{search}" placeholder="Name, username, or email">
-                    </div>
                     <div class="col-md-4">
-                        <label for="role" class="form-label">Filter by Role</label>
-                        <select class="form-select" id="role" name="role">
-                            {role_options}
+                        <input type="text" class="form-control" name="q" placeholder="Search chairs..." value="{search_query}">
+                    </div>
+                    <div class="col-md-3">
+                        <select class="form-select" name="group">
+                            <option value="">All Groups</option>
+                            {"".join(f'<option value="{g}" {"selected" if g == group_filter else ""}>{g}</option>' for g in sorted(group_options))}
                         </select>
                     </div>
-                    <div class="col-md-2 d-flex align-items-end">
-                        <button type="submit" class="btn btn-primary me-2">
-                            <i class="fas fa-search me-1"></i>Filter
+                    <div class="col-md-2">
+                        <select class="form-select" name="status">
+                            <option value="">All Status</option>
+                            <option value="approved" {"selected" if status_filter == "approved" else ""}>Active</option>
+                            <option value="pending" {"selected" if status_filter == "pending" else ""}>Pending</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <button type="submit" class="btn btn-outline-primary me-2">
+                            <i class="fas fa-search me-1"></i>Search
                         </button>
-                        <a href="/admin/users/" class="btn btn-outline-secondary">
-                            <i class="fas fa-times"></i>
+                        <a href="/admin/chairs/" class="btn btn-outline-secondary">
+                            <i class="fas fa-times me-1"></i>Clear
                         </a>
                     </div>
                 </form>
             </div>
         </div>
 
-        <!-- Users Table -->
+        <!-- Bulk Actions -->
+        <div class="d-flex justify-content-between align-items-center mb-3" id="bulk-actions" style="display: none;">
+            <div>
+                <span id="selected-count">0</span> chairs selected
+            </div>
+            <div>
+                <button class="btn btn-outline-success btn-sm me-2" onclick="bulkApprove()">
+                    <i class="fas fa-check me-1"></i>Approve Selected
+                </button>
+                <button class="btn btn-outline-danger btn-sm me-2" onclick="bulkDelete()">
+                    <i class="fas fa-trash me-1"></i>Delete Selected
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="clearSelection()">
+                    <i class="fas fa-times me-1"></i>Clear
+                </button>
+            </div>
+        </div>
+
+        <!-- Chairs Table -->
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0">Users ({users.total} total)</h5>
+                <h5 class="mb-0">Chairs ({chairs.total})</h5>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
                     <table class="table table-hover mb-0">
                         <thead class="table-light">
                             <tr>
+                                <th width="50"><input type="checkbox" onclick="toggleAllCheckboxes(this)"></th>
                                 <th>Name</th>
                                 <th>Email</th>
-                                <th>Role</th>
-                                <th>Theme</th>
-                                <th>Joined</th>
-                                <th>Last Login</th>
-                                <th>Actions</th>
+                                <th>Group</th>
+                                <th>Status</th>
+                                <th>Added</th>
+                                <th width="180">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {user_rows}
+                            {chair_rows}
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
 
-        <!-- Pagination -->
-        {f'''
-        <nav aria-label="User pagination" class="mt-4">
-            <ul class="pagination justify-content-center">
-                {f'<li class="page-item {"disabled" if not users.has_prev else ""}"><a class="page-link" href="?page={users.prev_num}&search={search}&role={role_filter}">Previous</a></li>' if users.has_prev else ''}
-                {''.join([f'<li class="page-item {"active" if i == users.page else ""}"><a class="page-link" href="?page={i}&search={search}&role={role_filter}">{i}</a></li>' for i in users.iter_pages()])}
-                {f'<li class="page-item {"disabled" if not users.has_next else ""}"><a class="page-link" href="?page={users.next_num}&search={search}&role={role_filter}">Next</a></li>' if users.has_next else ''}
-            </ul>
-        </nav>
-        ''' if users.pages > 1 else ''}
+        {pagination}
     </div>
 
-    <script>
-        function changeRole(username, currentRole) {{
-            const roles = ['user', 'editor', 'admin'];
-            const currentIndex = roles.indexOf(currentRole);
-            const nextRole = roles[(currentIndex + 1) % roles.length];
-
-            if (confirm('Change ' + username + '\'s role from ' + currentRole + ' to ' + nextRole + '?')) {{
-                fetch('/admin/users/' + username + '/role', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                    }},
-                    body: JSON.stringify({{ role: nextRole }})
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.success) {{
-                        location.reload();
-                    }} else {{
-                        alert('Error: ' + data.message);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error:', error);
-                    alert('Error updating role');
-                }});
-            }}
-        }}
-
-        function deleteUser(username) {{
-            if (confirm('Are you sure you want to delete user ' + username + '? This action cannot be undone.')) {{
-                fetch('/admin/users/' + username + '/delete', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                    }}
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.success) {{
-                        location.reload();
-                    }} else {{
-                        alert('Error: ' + data.message);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error:', error);
-                    alert('Error deleting user');
-                }});
-            }}
-        }}
-    </script>
-    """
-
-    return BASE_TEMPLATE.format(
-        title="User Management - MLTF",
-        theme=current_theme,
-        user_menu=user_menu,
-        content=content
-    )
-
-@app.route('/admin/users/<username>/role', methods=['POST'])
-@require_role('admin')
-def change_user_role(username):
-    data = request.get_json()
-    new_role = data.get('role', '')
-
-    if new_role not in ['user', 'editor', 'admin']:
-        return jsonify({'success': False, 'message': 'Invalid role'}), 400
-
-    user = User.query.filter_by(username=username).first()
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
-
-    # Prevent admin from demoting themselves
-    current_admin = get_current_user()
-    if user.id == current_admin['id'] and new_role != 'admin':
-        return jsonify({'success': False, 'message': 'Cannot change your own admin role'}), 400
-
-    user.role = new_role
-    db.session.commit()
-
-    # Log the action
-    add_to_document_history(f"user-{user.id}", "role_changed", current_admin['name'],
-                           f"Changed {user.name}'s role to {new_role}")
-
-    return jsonify({'success': True, 'message': f'Role changed to {new_role}'})
-
-@app.route('/admin/users/<username>/delete', methods=['POST'])
-@require_role('admin')
-def delete_user(username):
-    user = User.query.filter_by(username=username).first()
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
-
-    # Prevent admin from deleting themselves
-    current_admin = get_current_user()
-    if user.id == current_admin['id']:
-        return jsonify({'success': False, 'message': 'Cannot delete your own account'}), 400
-
-    # Log before deletion
-    add_to_document_history(f"user-{user.id}", "user_deleted", current_admin['name'],
-                           f"Deleted user {user.name} ({user.email})")
-
-    db.session.delete(user)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'User deleted successfully'})
-
-@app.route('/admin/submissions/')
-@require_role('admin')
-def admin_submissions():
-    user_menu = generate_user_menu()
-    current_theme = get_current_user().get('theme', 'dark')
-
-    # Get submissions with filters
-    status_filter = request.args.get('status', 'submitted')
-    page = request.args.get('page', 1, type=int)
-    per_page = 10
-
-    query = Submission.query
-
-    if status_filter and status_filter != 'all':
-        query = query.filter_by(status=status_filter)
-
-    submissions = query.order_by(Submission.submitted_at.desc()).paginate(
-        page=page, per_page=per_page, error_out=False)
-
-    # Build submission cards
-    submission_cards = ""
-    for submission in submissions.items:
-        status_badge = {
-            'submitted': 'badge bg-warning text-dark',
-            'approved': 'badge bg-success',
-            'rejected': 'badge bg-danger',
-            'published': 'badge bg-info'
-        }.get(submission.status, 'badge bg-secondary')
-
-        # Get file size if file exists
-        file_size = "N/A"
-        if submission.file_path and os.path.exists(submission.file_path):
-            file_size = f"{os.path.getsize(submission.file_path) / 1024:.1f} KB"
-
-        action_buttons = ""
-        if submission.status == 'submitted':
-            action_buttons = f"""
-            <button class="btn btn-success btn-sm me-2" onclick="approveSubmission('{submission.id}')">
-                <i class="fas fa-check me-1"></i>Approve
-            </button>
-            <button class="btn btn-danger btn-sm me-2" onclick="rejectSubmission('{submission.id}')">
-                <i class="fas fa-times me-1"></i>Reject
-            </button>
-            <button class="btn btn-info btn-sm" onclick="publishAsRFC('{submission.id}')">
-                <i class="fas fa-star me-1"></i>Publish as RFC
-            </button>
-            """
-        elif submission.status == 'approved':
-            action_buttons = f"""
-            <button class="btn btn-info btn-sm me-2" onclick="publishAsRFC('{submission.id}')">
-                <i class="fas fa-star me-1"></i>Publish as RFC
-            </button>
-            <button class="btn btn-warning btn-sm" onclick="unapproveSubmission('{submission.id}')">
-                <i class="fas fa-undo me-1"></i>Unapprove
-            </button>
-            """
-
-        submission_cards += f"""
-        <div class="card mb-3">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h6 class="mb-0">
-                    <a href="/doc/draft/{submission.id}/" class="text-decoration-none">
-                        {submission.title}
-                    </a>
-                </h6>
-                <span class="{status_badge}">{submission.status.title()}</span>
-            </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-8">
-                        <p class="mb-2"><strong>Authors:</strong> {', '.join(submission.authors)}</p>
-                        <p class="mb-2"><strong>Group:</strong> {submission.group or 'None'}</p>
-                        <p class="mb-2"><strong>Submitted:</strong> {submission.submitted_at.strftime('%Y-%m-%d %H:%M')} by {submission.submitted_by}</p>
-                        <p class="mb-2"><strong>File:</strong> {submission.filename} ({file_size})</p>
-                        {f'<p class="mb-2"><strong>Abstract:</strong> {submission.abstract[:200]}...</p>' if submission.abstract else ''}
-                    </div>
-                    <div class="col-md-4">
-                        <div class="d-grid gap-2">
-                            <a href="/doc/draft/{submission.id}/" class="btn btn-outline-primary btn-sm">
-                                <i class="fas fa-eye me-1"></i>View Draft
-                            </a>
-                            {action_buttons}
+    <!-- Add/Edit Chair Modal -->
+    <div class="modal fade" id="chairModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="chairModalTitle">Add New Chair</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="chairForm">
+                        <input type="hidden" id="chairId" value="">
+                        <div class="mb-3">
+                            <label for="chairName" class="form-label">Chair Name *</label>
+                            <input type="text" class="form-control" id="chairName" required>
                         </div>
-                    </div>
+                        <div class="mb-3">
+                            <label for="chairEmail" class="form-label">Email</label>
+                            <input type="email" class="form-control" id="chairEmail">
+                        </div>
+                        <div class="mb-3">
+                            <label for="chairGroup" class="form-label">Working Group *</label>
+                            <select class="form-select" id="chairGroup" required>
+                                <option value="">Select Group</option>
+                                {"".join(f'<option value="{g}">{g}</option>' for g in sorted(group_options))}
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="chairApproved">
+                                <label class="form-check-label" for="chairApproved">
+                                    Approved (Active Chair)
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="saveChair()">Save Chair</button>
                 </div>
             </div>
         </div>
-        """
+    </div>
 
-    # Status filter options
-    status_options = f"""
-    <option value="all" {'selected' if status_filter == 'all' else ''}>All Submissions</option>
-    <option value="submitted" {'selected' if status_filter == 'submitted' else ''}>Pending Review</option>
-    <option value="approved" {'selected' if status_filter == 'approved' else ''}>Approved</option>
-    <option value="rejected" {'selected' if status_filter == 'rejected' else ''}>Rejected</option>
-    <option value="published" {'selected' if status_filter == 'published' else ''}>Published</option>
-    """
-
-    content = f"""
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/admin/">Admin Dashboard</a></li>
-                <li class="breadcrumb-item active">Submission Management</li>
-            </ol>
-        </nav>
-
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1>Submission Management</h1>
-            <div>
-                <select class="form-select form-select-sm" onchange="changeStatusFilter(this.value)">
-                    {status_options}
-                </select>
-            </div>
-        </div>
-
-        <!-- Statistics -->
-        <div class="row mb-4">
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-warning">{Submission.query.filter_by(status='submitted').count()}</h4>
-                        <p class="mb-0 small">Pending Review</p>
+    <!-- Transfer Chair Modal -->
+    <div class="modal fade" id="transferModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Transfer Chair</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="transferChairInfo" class="mb-3"></div>
+                    <div class="mb-3">
+                        <label for="transferGroup" class="form-label">New Working Group</label>
+                        <select class="form-select" id="transferGroup" required>
+                            <option value="">Select Group</option>
+                            {"".join(f'<option value="{g}">{g}</option>' for g in sorted(group_options))}
+                        </select>
                     </div>
                 </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-success">{Submission.query.filter_by(status='approved').count()}</h4>
-                        <p class="mb-0 small">Approved</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-danger">{Submission.query.filter_by(status='rejected').count()}</h4>
-                        <p class="mb-0 small">Rejected</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-info">{Submission.query.filter_by(status='published').count()}</h4>
-                        <p class="mb-0 small">Published as RFC</p>
-                    </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="confirmTransfer()">Transfer Chair</button>
                 </div>
             </div>
         </div>
-
-        <!-- Submissions -->
-        <div id="submissions-container">
-            {submission_cards}
-        </div>
-
-        <!-- Pagination -->
-        {f'''
-        <nav aria-label="Submission pagination" class="mt-4">
-            <ul class="pagination justify-content-center">
-                {f'<li class="page-item {"disabled" if not submissions.has_prev else ""}"><a class="page-link" href="?page={submissions.prev_num}&status={status_filter}">Previous</a></li>' if submissions.has_prev else ''}
-                {''.join([f'<li class="page-item {"active" if i == submissions.page else ""}"><a class="page-link" href="?page={i}&status={status_filter}">{i}</a></li>' for i in submissions.iter_pages()])}
-                {f'<li class="page-item {"disabled" if not submissions.has_next else ""}"><a class="page-link" href="?page={submissions.next_num}&status={status_filter}">Next</a></li>' if submissions.has_next else ''}
-            </ul>
-        </nav>
-        ''' if submissions.pages > 1 else ''}
     </div>
 
     <script>
-        function changeStatusFilter(status) {{
-            window.location.href = '?status=' + status;
+        let currentChairId = null;
+        let currentTransferChairId = null;
+
+        function addNewChair() {{
+            document.getElementById('chairModalTitle').textContent = 'Add New Chair';
+            document.getElementById('chairId').value = '';
+            document.getElementById('chairName').value = '';
+            document.getElementById('chairEmail').value = '';
+            document.getElementById('chairGroup').value = '';
+            document.getElementById('chairApproved').checked = false;
+            new bootstrap.Modal(document.getElementById('chairModal')).show();
         }}
 
-        function approveSubmission(submissionId) {{
-            if (confirm('Approve this draft submission? It will be marked as approved and ready for publication.')) {{
-                updateSubmissionStatus(submissionId, 'approved');
+        function editChair(chairId) {{
+            fetch(`/admin/chairs/${{chairId}}`)
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        const chair = data.chair;
+                        document.getElementById('chairModalTitle').textContent = 'Edit Chair';
+                        document.getElementById('chairId').value = chair.id;
+                        document.getElementById('chairName').value = chair.chair_name;
+                        document.getElementById('chairEmail').value = chair.chair_email || '';
+                        document.getElementById('chairGroup').value = chair.group_acronym;
+                        document.getElementById('chairApproved').checked = chair.approved;
+                        new bootstrap.Modal(document.getElementById('chairModal')).show();
+                    }} else {{
+                        alert('Error loading chair data: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error loading chair data');
+                }});
+        }}
+
+        function saveChair() {{
+            const chairId = document.getElementById('chairId').value;
+            const chairData = {{
+                chair_name: document.getElementById('chairName').value.trim(),
+                chair_email: document.getElementById('chairEmail').value.trim(),
+                group_acronym: document.getElementById('chairGroup').value,
+                approved: document.getElementById('chairApproved').checked
+            }};
+
+            if (!chairData.chair_name || !chairData.group_acronym) {{
+                alert('Chair name and group are required');
+                return;
             }}
-        }}
 
-        function rejectSubmission(submissionId) {{
-            const reason = prompt('Reason for rejection (optional):');
-            updateSubmissionStatus(submissionId, 'rejected', reason);
-        }}
+            const method = chairId ? 'PUT' : 'POST';
+            const url = chairId ? `/admin/chairs/${{chairId}}` : '/admin/chairs/';
 
-        function unapproveSubmission(submissionId) {{
-            if (confirm('Remove approval for this submission?')) {{
-                updateSubmissionStatus(submissionId, 'submitted');
-            }}
-        }}
-
-        function publishAsRFC(submissionId) {{
-            const rfcNumber = prompt('Enter RFC number:');
-            if (rfcNumber && confirm('Publish as RFC ' + rfcNumber + '?')) {{
-                updateSubmissionStatus(submissionId, 'published', null, rfcNumber);
-            }}
-        }}
-
-        function updateSubmissionStatus(submissionId, status, reason = null, rfcNumber = null) {{
-            const data = {{ status: status }};
-            if (reason) data.reason = reason;
-            if (rfcNumber) data.rfc_number = rfcNumber;
-
-                fetch('/admin/submissions/' + submissionId + '/status', {{
-                method: 'POST',
+            fetch(url, {{
+                method: method,
                 headers: {{
                     'Content-Type': 'application/json',
                 }},
-                body: JSON.stringify(data)
+                body: JSON.stringify(chairData)
             }})
             .then(response => response.json())
             .then(data => {{
                 if (data.success) {{
+                    bootstrap.Modal.getInstance(document.getElementById('chairModal')).hide();
                     location.reload();
                 }} else {{
-                    alert('Error: ' + data.message);
+                    alert('Error saving chair: ' + data.message);
                 }}
             }})
             .catch(error => {{
                 console.error('Error:', error);
-                alert('Error updating submission status');
+                alert('Error saving chair');
             }});
+        }}
+
+        function approveChair(chairId) {{
+            if (confirm('Are you sure you want to approve this chair?')) {{
+                fetch(`/admin/chairs/${{chairId}}/approve`, {{
+                    method: 'POST'
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('Error approving chair: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error approving chair');
+                }});
+            }}
+        }}
+
+        function transferChair(chairId) {{
+            fetch(`/admin/chairs/${{chairId}}`)
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        const chair = data.chair;
+                        document.getElementById('transferChairInfo').innerHTML = `
+                            <strong>${{chair.chair_name}}</strong> from <code>${{chair.group_acronym}}</code>
+                        `;
+                        document.getElementById('transferGroup').value = '';
+                        currentTransferChairId = chairId;
+                        new bootstrap.Modal(document.getElementById('transferModal')).show();
+                    }} else {{
+                        alert('Error loading chair data: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error loading chair data');
+                }});
+        }}
+
+        function confirmTransfer() {{
+            const newGroup = document.getElementById('transferGroup').value;
+            if (!newGroup) {{
+                alert('Please select a new working group');
+                return;
+            }}
+
+            fetch(`/admin/chairs/${{currentTransferChairId}}/transfer`, {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify({{ group_acronym: newGroup }})
+            }})
+            .then(response => response.json())
+            .then(data => {{
+                if (data.success) {{
+                    bootstrap.Modal.getInstance(document.getElementById('transferModal')).hide();
+                    location.reload();
+                }} else {{
+                    alert('Error transferring chair: ' + data.message);
+                }}
+            }})
+            .catch(error => {{
+                console.error('Error:', error);
+                alert('Error transferring chair');
+            }});
+        }}
+
+        function deleteChair(chairId) {{
+            if (confirm('Are you sure you want to delete this chair? This action cannot be undone.')) {{
+                fetch(`/admin/chairs/${{chairId}}`, {{
+                    method: 'DELETE'
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('Error deleting chair: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error deleting chair');
+                }});
+            }}
+        }}
+
+        function toggleAllCheckboxes(checkbox) {{
+            const checkboxes = document.querySelectorAll('.chair-checkbox');
+            checkboxes.forEach(cb => cb.checked = checkbox.checked);
+            updateBulkActions();
+        }}
+
+        function updateBulkActions() {{
+            const checkedBoxes = document.querySelectorAll('.chair-checkbox:checked');
+            const bulkActions = document.getElementById('bulk-actions');
+            const selectedCount = document.getElementById('selected-count');
+
+            if (checkedBoxes.length > 0) {{
+                bulkActions.style.display = 'flex';
+                selectedCount.textContent = checkedBoxes.length;
+            }} else {{
+                bulkActions.style.display = 'none';
+            }}
+        }}
+
+        function bulkApprove() {{
+            const checkedBoxes = document.querySelectorAll('.chair-checkbox:checked');
+            const chairIds = Array.from(checkedBoxes).map(cb => parseInt(cb.value));
+
+            if (chairIds.length === 0) {{
+                alert('No chairs selected');
+                return;
+            }}
+
+            if (confirm(`Are you sure you want to approve ${{chairIds.length}} chair(s)?`)) {{
+                fetch('/admin/chairs/bulk-approve', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify({{ chair_ids: chairIds }})
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('Error approving chairs: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error approving chairs');
+                }});
+            }}
+        }}
+
+        function bulkDelete() {{
+            const checkedBoxes = document.querySelectorAll('.chair-checkbox:checked');
+            const chairIds = Array.from(checkedBoxes).map(cb => parseInt(cb.value));
+
+            if (chairIds.length === 0) {{
+                alert('No chairs selected');
+                return;
+            }}
+
+            if (confirm(`Are you sure you want to delete ${{chairIds.length}} chair(s)? This action cannot be undone.`)) {{
+                fetch('/admin/chairs/bulk-delete', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify({{ chair_ids: chairIds }})
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('Error deleting chairs: ' + data.message);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    alert('Error deleting chairs');
+                }});
+            }}
+        }}
+
+        function clearSelection() {{
+            const checkboxes = document.querySelectorAll('.chair-checkbox');
+            checkboxes.forEach(cb => cb.checked = false);
+            updateBulkActions();
         }}
     </script>
     """
 
     return BASE_TEMPLATE.format(
-        title="Submission Management - MLTF",
+        title="Chair Management - MLTF",
         theme=current_theme,
         user_menu=user_menu,
         content=content
     )
 
-@app.route('/admin/submissions/<submission_id>/status', methods=['POST'])
+# Chair management API routes
+@app.route('/admin/chairs/', methods=['POST'])
 @require_role('admin')
-def update_submission_status(submission_id):
+def create_chair():
     data = request.get_json()
-    new_status = data.get('status', '')
-    reason = data.get('reason', '')
-    rfc_number = data.get('rfc_number', '')
+    chair_name = data.get('chair_name', '').strip()
+    chair_email = data.get('chair_email', '').strip() or None
+    group_acronym = data.get('group_acronym', '').strip()
+    approved = data.get('approved', False)
 
-    if new_status not in ['submitted', 'approved', 'rejected', 'published']:
-        return jsonify({'success': False, 'message': 'Invalid status'}), 400
+    if not chair_name or not group_acronym:
+        return jsonify({'success': False, 'message': 'Chair name and group are required'}), 400
 
-    submission = Submission.query.filter_by(id=submission_id).first()
-    if not submission:
-        return jsonify({'success': False, 'message': 'Submission not found'}), 404
+    # Check if chair already exists in this group
+    for chair_data in WORKING_GROUP_CHAIRS.values():
+        if chair_data['group_acronym'] == group_acronym and chair_data['chair_name'] == chair_name:
+            return jsonify({'success': False, 'message': 'Chair already exists in this group'}), 400
 
-    old_status = submission.status
-    submission.status = new_status
-
-    if new_status == 'rejected' and reason:
-        submission.rejected_at = datetime.utcnow()
-
-    if new_status == 'published' and rfc_number:
-        # Create a published RFC record
-        published_draft = PublishedDraft(
-            name=f"rfc{rfc_number}",
-            title=submission.title,
-            authors=submission.authors,
-            group=submission.group,
-            status='published',
-            date=datetime.utcnow().strftime('%Y-%m-%d'),
-            abstract=submission.abstract,
-            submission_id=submission.id
-        )
-        db.session.add(published_draft)
-
-    db.session.commit()
-
-    # Log the action
-    admin_user = get_current_user()
-    action_details = f"Changed status from {old_status} to {new_status}"
-    if reason:
-        action_details += f" - Reason: {reason}"
-    if rfc_number:
-        action_details += f" - Published as RFC {rfc_number}"
-
-    add_to_document_history(f"submission-{submission.id}", "status_changed",
-                           admin_user['name'], action_details)
-
-    return jsonify({'success': True, 'message': f'Status updated to {new_status}'})
-
-@app.route('/submit/approve/<submission_id>', methods=['POST'])
-@require_role('admin')
-def approve_submission(submission_id):
-    submission = Submission.query.filter_by(id=submission_id).first()
-    if not submission:
-        flash('Submission not found', 'error')
-        return redirect('/admin/submissions/')
-
-    submission.status = 'approved'
-    submission.approved_at = datetime.utcnow()
-    db.session.commit()
-
-    # Log the action
-    admin_user = get_current_user()
-    add_to_document_history(f"submission-{submission.id}", "approved", admin_user['name'],
-                           f"Approved submission: {submission.title}")
-
-    flash(f'Submission {submission.id} approved successfully!', 'success')
-    return redirect(f'/submit/status/{submission_id}/')
-
-@app.route('/submit/reject/<submission_id>', methods=['POST'])
-@require_role('admin')
-def reject_submission(submission_id):
-    submission = Submission.query.filter_by(id=submission_id).first()
-    if not submission:
-        flash('Submission not found', 'error')
-        return redirect('/admin/submissions/')
-
-    submission.status = 'rejected'
-    submission.rejected_at = datetime.utcnow()
-    db.session.commit()
-
-    # Log the action
-    admin_user = get_current_user()
-    add_to_document_history(f"submission-{submission.id}", "rejected", admin_user['name'],
-                           f"Rejected submission: {submission.title}")
-
-    flash(f'Submission {submission.id} rejected!', 'warning')
-    return redirect(f'/submit/status/{submission_id}/')
-
-@app.route('/download/<submission_id>')
-@require_auth
-def download_submission(submission_id):
-    submission = Submission.query.filter_by(id=submission_id).first()
-    if not submission:
-        return "Submission not found", 404
-
-    # Check if user owns this submission or is admin
+    # Get current user for audit logging
     current_user = get_current_user()
-    if submission.submitted_by != current_user['name'] and current_user.get('role') not in ['admin', 'editor']:
-        return "Access denied", 403
 
-    if not submission.file_path or not os.path.exists(submission.file_path):
-        return "File not found", 404
+    # Generate unique ID
+    chair_id = str(uuid.uuid4())
 
-    return send_file(submission.file_path, as_attachment=True, download_name=submission.filename)
+    # Create new chair
+    WORKING_GROUP_CHAIRS[chair_id] = {
+        'chair_name': chair_name,
+        'chair_email': chair_email,
+        'group_acronym': group_acronym,
+        'approved': approved,
+        'set_at': datetime.utcnow()
+    }
 
-@app.route('/admin/analytics/')
+    return jsonify({'success': True, 'message': 'Chair created successfully', 'chair_id': chair_id})
+
+@app.route('/admin/chairs/<chair_id>', methods=['GET', 'PUT', 'DELETE'])
 @require_role('admin')
-def admin_analytics():
-    user_menu = generate_user_menu()
-    current_theme = get_current_user().get('theme', 'dark')
+def manage_chair(chair_id):
+    if chair_id not in WORKING_GROUP_CHAIRS:
+        return jsonify({'success': False, 'message': 'Chair not found'}), 404
 
-    # Most active drafts (recent submissions)
-    active_drafts = Submission.query.order_by(Submission.submitted_at.desc()).limit(20).all()
+    chair = WORKING_GROUP_CHAIRS[chair_id]
+    current_user = get_current_user()
 
-    # Most active users (by recent logins and submissions)
-    active_users = User.query.order_by(User.last_login.desc()).limit(20).all()
+    if request.method == 'GET':
+        return jsonify({
+            'success': True,
+            'chair': {
+                'id': chair_id,
+                'chair_name': chair['chair_name'],
+                'chair_email': chair['chair_email'],
+                'group_acronym': chair['group_acronym'],
+                'approved': chair['approved'],
+                'set_at': chair['set_at'].isoformat()
+            }
+        })
 
-    # User role distribution
-    role_stats = db.session.query(User.role, db.func.count(User.id)).group_by(User.role).all()
-    role_data = {role: count for role, count in role_stats}
+    elif request.method == 'PUT':
+        data = request.get_json()
+        old_data = chair.copy()
 
-    # Submission status distribution
-    status_stats = db.session.query(Submission.status, db.func.count(Submission.id)).group_by(Submission.status).all()
-    status_data = {status: count for status, count in status_stats}
+        # Update chair
+        chair['chair_name'] = data.get('chair_name', chair['chair_name']).strip()
+        chair['chair_email'] = data.get('chair_email', '').strip() or None
+        chair['group_acronym'] = data.get('group_acronym', chair['group_acronym']).strip()
+        chair['approved'] = data.get('approved', chair['approved'])
 
-    # Recent activity (last 30 days)
-    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-    recent_users = User.query.filter(User.created_at >= thirty_days_ago).count()
-    recent_submissions = Submission.query.filter(Submission.submitted_at >= thirty_days_ago).count()
+        return jsonify({'success': True, 'message': 'Chair updated successfully'})
 
-    # Build active drafts table
-    draft_rows = ""
-    for i, draft in enumerate(active_drafts, 1):
-        draft_rows += f"""
-        <tr>
-            <td>{i}</td>
-            <td>
-                <a href="/doc/draft/{draft.id}/" class="text-decoration-none">
-                    {draft.title[:60]}{'...' if len(draft.title) > 60 else ''}
-                </a>
-            </td>
-            <td>{', '.join(draft.authors[:2])}{'...' if len(draft.authors) > 2 else ''}</td>
-            <td>{draft.group or 'None'}</td>
-            <td>{draft.submitted_at.strftime('%Y-%m-%d')}</td>
-            <td><span class="badge bg-{ 'warning' if draft.status == 'submitted' else 'success' if draft.status == 'approved' else 'danger' if draft.status == 'rejected' else 'info'}">{draft.status}</span></td>
-        </tr>
-        """
+    elif request.method == 'DELETE':
+        del WORKING_GROUP_CHAIRS[chair_id]
+        return jsonify({'success': True, 'message': 'Chair deleted successfully'})
 
-    # Build active users table
-    user_rows = ""
-    for i, user in enumerate(active_users, 1):
-        user_rows += f"""
-        <tr>
-            <td>{i}</td>
-            <td>
-                <strong>{user.name}</strong><br>
-                <small class="text-muted">@{user.username}</small>
-            </td>
-            <td>{user.email}</td>
-            <td><span class="badge bg-{ 'danger' if user.role == 'admin' else 'warning' if user.role == 'editor' else 'secondary'}">{user.role.title()}</span></td>
-            <td>{user.created_at.strftime('%Y-%m-%d')}</td>
-            <td>{user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never'}</td>
-        </tr>
-        """
+@app.route('/admin/chairs/<chair_id>/approve', methods=['POST'])
+@require_role('admin')
+def approve_chair(chair_id):
+    if chair_id not in WORKING_GROUP_CHAIRS:
+        return jsonify({'success': False, 'message': 'Chair not found'}), 404
 
-    content = f"""
-    <div class="container mt-4">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/admin/">Admin Dashboard</a></li>
-                <li class="breadcrumb-item active">Analytics</li>
-            </ol>
-        </nav>
+    chair = WORKING_GROUP_CHAIRS[chair_id]
+    current_user = get_current_user()
 
-        <h1 class="mb-4">Analytics Dashboard</h1>
+    if chair['approved']:
+        return jsonify({'success': False, 'message': 'Chair is already approved'}), 400
 
-        <!-- Overview Stats -->
-        <div class="row mb-4">
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-info">{recent_users}</h4>
-                        <p class="mb-0 small">New Users (30 days)</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-success">{recent_submissions}</h4>
-                        <p class="mb-0 small">New Submissions (30 days)</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-primary">{len(active_drafts)}</h4>
-                        <p class="mb-0 small">Total Submissions</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h4 class="text-warning">{len(active_users)}</h4>
-                        <p class="mb-0 small">Registered Users</p>
-                    </div>
-                </div>
-            </div>
-        </div>
+    chair['approved'] = True
 
-        <div class="row">
-            <!-- Most Active Drafts -->
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Most Active Drafts</h5>
-                        <small class="text-muted">Recent submissions and activity</small>
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Title</th>
-                                        <th>Authors</th>
-                                        <th>Group</th>
-                                        <th>Date</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {draft_rows}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
+    return jsonify({'success': True, 'message': 'Chair approved successfully'})
 
-            <!-- Most Active Users -->
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Most Active Users</h5>
-                        <small class="text-muted">Users by recent login activity</small>
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Name</th>
-                                        <th>Email</th>
-                                        <th>Role</th>
-                                        <th>Joined</th>
-                                        <th>Last Login</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {user_rows}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+@app.route('/admin/chairs/<chair_id>/transfer', methods=['POST'])
+@require_role('admin')
+def transfer_chair(chair_id):
+    if chair_id not in WORKING_GROUP_CHAIRS:
+        return jsonify({'success': False, 'message': 'Chair not found'}), 404
 
-        <!-- Distribution Charts (Text-based) -->
-        <div class="row mt-4">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>User Role Distribution</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="mb-3">
-                            <strong>Admin:</strong> {role_data.get('admin', 0)} users
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-danger" style="width: {(role_data.get('admin', 0) / max(1, sum(role_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <strong>Editor:</strong> {role_data.get('editor', 0)} users
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-warning" style="width: {(role_data.get('editor', 0) / max(1, sum(role_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <strong>User:</strong> {role_data.get('user', 0)} users
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-secondary" style="width: {(role_data.get('user', 0) / max(1, sum(role_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+    chair = WORKING_GROUP_CHAIRS[chair_id]
+    data = request.get_json()
+    new_group = data.get('group_acronym', '').strip()
 
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Submission Status Distribution</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="mb-3">
-                            <strong>Submitted:</strong> {status_data.get('submitted', 0)}
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-warning" style="width: {(status_data.get('submitted', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <strong>Approved:</strong> {status_data.get('approved', 0)}
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-success" style="width: {(status_data.get('approved', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <strong>Published:</strong> {status_data.get('published', 0)}
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-info" style="width: {(status_data.get('published', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <strong>Rejected:</strong> {status_data.get('rejected', 0)}
-                            <div class="progress mb-2">
-                                <div class="progress-bar bg-danger" style="width: {(status_data.get('rejected', 0) / max(1, sum(status_data.values()))) * 100:.1f}%"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    """
+    if not new_group:
+        return jsonify({'success': False, 'message': 'New group is required'}), 400
 
-    return BASE_TEMPLATE.format(
-        title="Analytics - MLTF",
-        theme=current_theme,
-        user_menu=user_menu,
-        content=content
-    )
+    if new_group == chair['group_acronym']:
+        return jsonify({'success': False, 'message': 'Chair is already in this group'}), 400
+
+    current_user = get_current_user()
+    chair['group_acronym'] = new_group
+
+    return jsonify({'success': True, 'message': 'Chair transferred successfully'})
+
+@app.route('/admin/chairs/bulk-approve', methods=['POST'])
+@require_role('admin')
+def bulk_approve_chairs():
+    data = request.get_json()
+    chair_ids = data.get('chair_ids', [])
+
+    if not chair_ids:
+        return jsonify({'success': False, 'message': 'No chairs selected'}), 400
+
+    current_user = get_current_user()
+
+    # Update chairs
+    approved_count = 0
+    for chair_id in chair_ids:
+        if chair_id in WORKING_GROUP_CHAIRS and not WORKING_GROUP_CHAIRS[chair_id]['approved']:
+            WORKING_GROUP_CHAIRS[chair_id]['approved'] = True
+            approved_count += 1
+
+    return jsonify({'success': True, 'message': f'Approved {approved_count} chair(s) successfully'})
+
+@app.route('/admin/chairs/bulk-delete', methods=['POST'])
+@require_role('admin')
+def bulk_delete_chairs():
+    data = request.get_json()
+    chair_ids = data.get('chair_ids', [])
+
+    if not chair_ids:
+        return jsonify({'success': False, 'message': 'No chairs selected'}), 400
+
+    current_user = get_current_user()
+
+    # Delete chairs
+    deleted_count = 0
+    for chair_id in chair_ids:
+        if chair_id in WORKING_GROUP_CHAIRS:
+            del WORKING_GROUP_CHAIRS[chair_id]
+            deleted_count += 1
+
+    return jsonify({'success': True, 'message': f'Deleted {deleted_count} chair(s) successfully'})
 
 # Routes
 @app.route('/')
 def home():
     # Generate user menu
     current_user = get_current_user()
-    current_theme = current_user.get('theme', 'dark') if current_user else 'light'
-
     if current_user:
-        user_role = current_user.get('role', 'user')
-        is_admin = user_role in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']
-
-        admin_link = '<li><a class="dropdown-item" href="/admin/">Admin Dashboard</a></li>' if is_admin else ''
-
         user_menu = f"""
         <div class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                 {current_user['name']}
             </a>
             <ul class="dropdown-menu">
-                {admin_link}
-                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
                 <li><a class="dropdown-item" href="/logout/">Logout</a></li>
             </ul>
         </div>
@@ -3237,13 +1820,13 @@ def home():
         </div>
         """
     
-    return BASE_TEMPLATE.format(title="MLTF", theme=current_theme, user_menu=user_menu, content=f"""
+    return BASE_TEMPLATE.format(title="IETF Datatracker", user_menu=user_menu, content=f"""
     
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <h1>MLTF</h1>
-                <p class="lead">The day-to-day front-end to the MLTF database for people who work on Meta-Layer standards.</p>
+                <h1>IETF Datatracker</h1>
+                <p class="lead">The day-to-day front-end to the IETF database for people who work on IETF standards.</p>
                 
                 <div class="row">
                     <div class="col-md-6">
@@ -3252,7 +1835,7 @@ def home():
                                 <h5>Recent Documents</h5>
                             </div>
                             <div class="card-body">
-                                <p>View the latest MLTF documents including drafts, RFCs, and other standards.</p>
+                                <p>View the latest IETF documents including drafts, RFCs, and other standards.</p>
                                 <a href="/doc/all/" class="btn btn-primary">View All Documents</a>
                             </div>
                         </div>
@@ -3263,7 +1846,7 @@ def home():
                                 <h5>Working Groups</h5>
                             </div>
                             <div class="card-body">
-                                <p>Browse MLTF working groups and their activities.</p>
+                                <p>Browse IETF working groups and their activities.</p>
                                 <a href="/group/" class="btn btn-primary">View Working Groups</a>
                             </div>
                         </div>
@@ -3277,7 +1860,7 @@ def home():
                                 <h5>Meetings</h5>
                             </div>
                             <div class="card-body">
-                                <p>Information about MLTF meetings and sessions.</p>
+                                <p>Information about IETF meetings and sessions.</p>
                                 <a href="/meeting/" class="btn btn-primary">View Meetings</a>
                             </div>
                         </div>
@@ -3288,7 +1871,7 @@ def home():
                                 <h5>People</h5>
                             </div>
                             <div class="card-body">
-                                <p>Directory of MLTF participants and contributors.</p>
+                                <p>Directory of IETF participants and contributors.</p>
                                 <a href="/person/" class="btn btn-primary">View People</a>
                             </div>
                         </div>
@@ -3311,15 +1894,8 @@ def home():
     </div>
     """)
 
-@app.route('/doc/active/')
-def active_documents():
-    """Show active documents (alias for all documents)"""
-    return all_documents()
-
 @app.route('/doc/all/')
 def all_documents():
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
     docs_html = ""
     for draft in DRAFTS:
         docs_html += f"""
@@ -3353,7 +1929,37 @@ def all_documents():
         </div>
         """
     
-    content = f"""
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Documents - IETF Datatracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand {{ font-weight: bold; }}
+        .document-card {{ margin-bottom: 1rem; }}
+        .document-title {{ font-weight: bold; color: #0066cc; }}
+        .document-meta {{ font-size: 0.9em; color: #666; }}
+        .status-badge {{ font-size: 0.8em; }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/doc/active/">Active Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
+            </div>
+        </div>
+    </nav>
+    
     <div class="container mt-4">
         <h1>All Documents</h1>
         <p>Showing {len(DRAFTS)} documents</p>
@@ -3362,135 +1968,49 @@ def all_documents():
             {docs_html}
         </div>
     </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
 """
-
-    return BASE_TEMPLATE.format(title="All Documents - MLTF", theme=current_theme, user_menu=user_menu, content=content)
 
 @app.route('/doc/draft/<draft_name>/')
 def draft_detail(draft_name):
-    # First try to find in DRAFTS (published documents)
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
-
-    # If not found in DRAFTS, try to find as a submission ID
-    submission = None
-    if not draft:
-        from ietf_data_viewer_simple import Submission
-        submission = Submission.query.filter_by(id=draft_name).first()
-        if submission:
-            # Create a draft-like object from the submission
-            draft = {
-                'name': submission.id,
-                'title': submission.title,
-                'authors': submission.authors,
-                'abstract': submission.abstract or 'Abstract not available for this draft.',
-                'status': submission.status,
-                'group': submission.group,
-                'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
-                'rev': '00',  # Default revision for submissions
-                'pages': 1,   # Default pages for submissions
-                'words': 0,   # Default words for submissions
-                'stream': 'ietf'  # Default stream
-            }
-
     if not draft:
         return "Document not found", 404
     
-    # Load full document content
-    document_content = "Document content not available."
-
-    # Try to get content from submission file first
-    if submission and submission.file_path and os.path.exists(submission.file_path):
-        _, ext = os.path.splitext(submission.filename.lower())
-        try:
-            if ext in ['.txt', '.xml']:
-                with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
-                    document_content = f.read()
-            elif ext == '.docx':
-                from docx import Document
-                doc = Document(submission.file_path)
-                content_parts = []
-                for paragraph in doc.paragraphs:
-                    if paragraph.text.strip():
-                        content_parts.append(paragraph.text)
-                for table in doc.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            if cell.text.strip():
-                                content_parts.append(cell.text)
-                document_content = '\n\n'.join(content_parts)
-            elif ext == '.pdf':
-                from PyPDF2 import PdfReader
-                reader = PdfReader(submission.file_path)
-                content_parts = []
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text.strip():
-                        content_parts.append(text)
-                document_content = '\n\n'.join(content_parts)
-                # Clean up PDF text
-                import re
-                document_content = re.sub(r'\n+', '\n', document_content)
-                document_content = re.sub(r' +', ' ', document_content)
-            else:
-                document_content = f"Document content cannot be displayed for {ext.upper()} files. Please download to view."
-        except Exception as e:
-            document_content = f"Error loading document content: {str(e)}"
-
-    # If no submission content, try to get from DRAFTS data
-    elif draft and 'name' in draft:
-        # For demo purposes, generate some sample content based on the draft
-        document_content = f"""INTERNET-DRAFT                                               {', '.join(draft.get('authors', []))}
-Intended status: Informational                            Meta-Layer Initiative
-Expires: {draft.get('date', 'TBD')}                                      {draft.get('date', 'TBD')}
-
-
-{draft.get('title', 'Document Title')}
-
-
-Abstract
-
-{draft.get('abstract', 'Abstract not available.')}
-
-
-1. Introduction
-
-This document describes {draft.get('title', 'the subject matter')}.
-
-The content of this draft is currently being developed and will be available
-in the full document once published.
-
-2. Status of This Memo
-
-This Internet-Draft is submitted in full conformance with the provisions
-of BCP 78 and BCP 79.
-
-Internet-Drafts are working documents of the Internet Engineering Task Force
-(IETF). Note that other groups may also distribute working documents as
-Internet-Drafts. The list of current Internet-Drafts is at
-https://datatracker.ietf.org/drafts/current/.
-
-Internet-Drafts are draft documents valid for a maximum of six months and
-may be updated, replaced, or obsoleted by other documents at any time. It is
-inappropriate to use Internet-Drafts as reference material or to cite them
-other than as "work in progress."
-
-This Internet-Draft will expire on {draft.get('date', 'TBD')}.
-
-
-3. References
-
-[IETF] IETF Datatracker, https://datatracker.ietf.org/
-
-Authors' Addresses
-
-{chr(10).join([f'{author} <email@example.com>' for author in draft.get('authors', [])])}
-
-Meta-Layer Initiative
-"""
-
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
-    content = f"""
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{draft['name']} - IETF Datatracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand {{ font-weight: bold; }}
+        .document-card {{ margin-bottom: 1rem; }}
+        .document-title {{ font-weight: bold; color: #0066cc; }}
+        .document-meta {{ font-size: 0.9em; color: #666; }}
+        .status-badge {{ font-size: 0.8em; }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/doc/active/">Active Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
+            </div>
+        </div>
+    </nav>
+    
     <div class="container mt-4">
         <h1>{draft['name']}</h1>
         <p class="lead">{draft['title']}</p>
@@ -3518,30 +2038,18 @@ Meta-Layer Initiative
                 
                 <div class="card mt-3">
                     <div class="card-header">
-                        <h5>Abstract</h5>
+                        <h5>Document Content</h5>
                     </div>
                     <div class="card-body">
-                        <p>{draft.get('abstract', 'Abstract not available for this draft.')}</p>
-                    </div>
-                </div>
-
-                <!-- Full Document Content -->
-                <div class="card mt-3">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Document Content</h5>
-                        <div>
-                            <a href="/download/{draft['name']}" class="btn btn-sm btn-outline-primary" target="_blank">
-                                <i class="fas fa-download me-1"></i>Download
-                            </a>
-                            <a href="/doc/draft/{draft['name']}.txt" class="btn btn-sm btn-outline-secondary" target="_blank">
-                                <i class="fas fa-external-link-alt me-1"></i>View TXT
-                            </a>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="document-content" style="font-family: 'Courier New', monospace; font-size: 0.9em; line-height: 1.4; white-space: pre-wrap; background-color: var(--input-bg) !important; color: var(--text-primary) !important; padding: 20px; border-radius: 8px; max-height: 800px; overflow-y: auto; border: 1px solid var(--input-border);">
-{document_content}
-                        </div>
+                        <p>This is a sample IETF document. In the real datatracker, this would contain the actual document content, including:</p>
+                        <ul>
+                            <li>Abstract</li>
+                            <li>Introduction</li>
+                            <li>Technical specifications</li>
+                            <li>References</li>
+                            <li>Author information</li>
+                        </ul>
+                        <p><strong>Abstract:</strong> This document describes the sample IETF draft {draft['name']}. It provides a framework for understanding how IETF documents are structured and managed within the datatracker system.</p>
                     </div>
                 </div>
             </div>
@@ -3552,7 +2060,7 @@ Meta-Layer Initiative
                         <h5>Actions</h5>
                     </div>
                     <div class="card-body">
-                        <a href="/doc/draft/{draft['name']}/comments/" class="btn btn-primary w-100 mb-2">View Comments ({Comment.query.filter_by(draft_name=draft_name).count()})</a>
+                        <a href="/doc/draft/{draft['name']}/comments/" class="btn btn-primary w-100 mb-2">View Comments</a>
                         <a href="/doc/draft/{draft['name']}/history/" class="btn btn-secondary w-100 mb-2">View History</a>
                         <a href="/doc/draft/{draft['name']}/revisions/" class="btn btn-info w-100 mb-2">View Revisions</a>
                         <a href="/doc/draft/{draft['name']}/" class="btn btn-outline-primary w-100">Download PDF</a>
@@ -3561,35 +2069,92 @@ Meta-Layer Initiative
                 
                 <div class="card mt-3">
                     <div class="card-header">
-                        <h5>Quick Comment</h5>
+                        <h5>Related Documents</h5>
                     </div>
                     <div class="card-body">
-                        <form method="POST" action="/doc/draft/{draft['name']}/comments/">
-                            <div class="mb-3">
-                                <textarea class="form-control" name="comment" rows="3" placeholder="Add a quick comment..." required></textarea>
+                        <p>Related documents would appear here in the real datatracker.</p>
                     </div>
-                            <button type="submit" class="btn btn-success btn-sm w-100">Post Comment</button>
-                        </form>
+                </div>
+            </div>
         </div>
     </div>
     
-                <div class="card mt-3">
-                    <div class="card-header">
-                        <h5>Related Documents</h5>
-                    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+"""
+
+@app.route('/group/')
+def groups():
+    groups_html = ""
+    for group in GROUPS:
+        groups_html += f"""
+        <div class="col-md-6">
+            <div class="card mb-3">
                 <div class="card-body">
-                        <p>Related documents would appear here in the real datatracker.</p>
+                    <h5 class="card-title">
+                        <a href="/group/{group['acronym']}/">{group['acronym']}</a>
+                    </h5>
+                    <p class="card-text">{group['name']}</p>
+                    <div class="document-meta">
+                        <span class="badge bg-primary">{group['type']}</span>
+                        <span class="badge bg-success ms-2">{group['state']}</span>
                     </div>
+                    <div class="mt-2">
+                        <small class="text-muted">
+                            Chairs: {', '.join(group['chairs'])}<br>
+                            {group['description']}
+                        </small>
                     </div>
                 </div>
             </div>
         </div>
         """
     
-    # Add document_content to the template
-    content = content.replace('{document_content}', document_content)
-
-    return BASE_TEMPLATE.format(title=f"{draft['name']} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Working Groups - IETF Datatracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand {{ font-weight: bold; }}
+        .document-card {{ margin-bottom: 1rem; }}
+        .document-title {{ font-weight: bold; color: #0066cc; }}
+        .document-meta {{ font-size: 0.9em; color: #666; }}
+        .status-badge {{ font-size: 0.8em; }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/doc/active/">Active Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
+            </div>
+        </div>
+    </nav>
+    
+    <div class="container mt-4">
+        <h1>Working Groups</h1>
+        <p>Showing {len(GROUPS)} working groups</p>
+        
+        <div class="row">
+            {groups_html}
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+"""
 
 @app.route('/doc/draft/<draft_name>/comments/', methods=['GET', 'POST'])
 @require_auth
@@ -3598,56 +2163,63 @@ def draft_comments(draft_name):
     if not draft:
         return "Document not found", 404
     
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
-    current_user = get_current_user()
-
-    # Handle new comment submission
+    # Handle new comment submission, likes, and replies
     if request.method == 'POST':
+        current_user = get_current_user()
         action = request.form.get('action', 'comment')
         
         if action == 'comment':
             comment_text = request.form.get('comment', '').strip()
             if comment_text:
-                # Create new comment in database
-                new_comment = Comment(
-                    draft_name=draft_name,
-                    text=comment_text,
-                    author=current_user['name']
-                )
-                db.session.add(new_comment)
-                db.session.commit()
+                # Initialize comments list for this draft if it doesn't exist
+                if draft_name not in COMMENTS:
+                    COMMENTS[draft_name] = []
+                
+                # Add new comment with unique ID
+                comment_id = f"comment_{len(COMMENTS[draft_name]) + 1}"
+                new_comment = {
+                    'id': comment_id,
+                    'author': current_user['name'],
+                    'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                    'comment': comment_text,
+                    'avatar': ''.join([word[0].upper() for word in current_user['name'].split()[:2]])
+                }
+                COMMENTS[draft_name].append(new_comment)
                 
                 # Add to document history
                 add_to_document_history(draft_name, 'Comment added', current_user['name'], f'Added comment: {comment_text[:50]}...')
                 
                 flash('Comment added successfully!', 'success')
-                return redirect(f'/doc/draft/{draft_name}/comments/')
+                return redirect(url_for('draft_comments', draft_name=draft_name))
             else:
                 flash('Please enter a comment.', 'error')
         
         elif action == 'like':
             comment_id = request.form.get('comment_id')
-            if comment_id:
+            if comment_id and current_user:
                 liked = toggle_comment_like(draft_name, comment_id, current_user['name'])
                 action_text = 'liked' if liked else 'unliked'
                 flash(f'Comment {action_text}!', 'success')
-                return redirect(f'/doc/draft/{draft_name}/comments/')
+                return redirect(url_for('draft_comments', draft_name=draft_name))
             else:
-                flash('Invalid comment ID.', 'error')
+                flash('Please log in to like comments.', 'error')
+                return redirect(url_for('login'))
         
         elif action == 'reply':
             parent_comment_id = request.form.get('parent_comment_id')
             reply_text = request.form.get('reply_text', '').strip()
-            if reply_text and parent_comment_id:
+            if reply_text and parent_comment_id and current_user:
                 add_comment_reply(draft_name, parent_comment_id, reply_text, current_user)
                 flash('Reply added successfully!', 'success')
-                return redirect(f'/doc/draft/{draft_name}/comments/')
+                return redirect(url_for('draft_comments', draft_name=draft_name))
+            elif not current_user:
+                flash('Please log in to reply to comments.', 'error')
+                return redirect(url_for('login'))
             else:
                 flash('Please enter a reply.', 'error')
     
-    # Get comments for this draft and build comment tree
-    all_comments = build_comment_tree(draft_name)
+    # Get all comments for this draft
+    all_comments = COMMENTS.get(draft_name, [])
     
     # Always include sample comments (real IETF-style comments)
     sample_comments = [
@@ -3656,34 +2228,106 @@ def draft_comments(draft_name):
             'author': 'John Smith',
             'date': '2024-01-15 14:30',
             'comment': 'This is a great draft! I think the approach is solid and the implementation details are well thought out.',
-            'avatar': 'JS',
-            'replies': []
+            'avatar': 'JS'
         },
         {
             'id': 'sample_2',
             'author': 'Alice Johnson',
             'date': '2024-01-16 09:15',
             'comment': 'I have some concerns about the security implications mentioned in section 3.2. Could we discuss this further?',
-            'avatar': 'AJ',
-            'replies': []
+            'avatar': 'AJ'
         },
         {
             'id': 'sample_3',
             'author': 'Bob Wilson',
             'date': '2024-01-16 16:45',
             'comment': 'The performance metrics look promising. Have you considered the impact on legacy systems?',
-            'avatar': 'BW',
-            'replies': []
+            'avatar': 'BW'
         }
     ]
     
     # Combine sample comments with user comments
     all_comments = sample_comments + all_comments
     
-    # Render the comment tree with nested replies
-    comments_html = render_comment_tree(all_comments, draft_name)
-
-    content = f"""
+    current_user = get_current_user()
+    comments_html = ""
+    for comment in all_comments:
+        comment_id = comment.get('id', 'unknown')
+        like_count = get_comment_likes(draft_name, comment_id)
+        is_liked = is_comment_liked(draft_name, comment_id, current_user['name']) if current_user else False
+        replies = get_comment_replies(draft_name, comment_id)
+        
+        # Like button class
+        like_btn_class = "btn-outline-danger" if is_liked else "btn-outline-secondary"
+        like_icon = "❤️" if is_liked else "🤍"
+        
+        comments_html += f"""
+        <div class="card mb-3" id="comment-{comment_id}">
+            <div class="card-body">
+                <div class="d-flex align-items-center mb-2">
+                    <div class="avatar bg-primary text-white rounded-circle me-2" style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; font-weight: bold;">
+                        {comment['avatar']}
+                    </div>
+                    <div>
+                        <strong>{comment['author']}</strong>
+                        <small class="text-muted ms-2">{comment['date']}</small>
+                    </div>
+                </div>
+                <p class="mb-2">{comment['comment']}</p>
+                <div class="d-flex gap-2 align-items-center">
+                    <button class="btn btn-sm {like_btn_class}" onclick="toggleLike('{comment_id}')">
+                        {like_icon} {like_count}
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="toggleReply('{comment_id}')">
+                        Reply
+                    </button>
+                </div>
+                
+                <!-- Reply form (hidden by default) -->
+                <div id="reply-form-{comment_id}" class="mt-3" style="display: none;">
+                    <form method="POST" class="d-flex gap-2">
+                        <input type="hidden" name="action" value="reply">
+                        <input type="hidden" name="parent_comment_id" value="{comment_id}">
+                        <input type="text" name="reply_text" class="form-control" placeholder="Write a reply..." required>
+                        <button type="submit" class="btn btn-primary btn-sm">Reply</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleReply('{comment_id}')">Cancel</button>
+                    </form>
+                </div>
+                
+                <!-- Replies -->
+                {render_replies(replies)}
+            </div>
+        </div>
+        """
+    
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comments for {draft_name} - IETF Datatracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand {{ font-weight: bold; }}
+        .avatar {{ font-size: 14px; }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/doc/active/">Active Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
+            </div>
+        </div>
+    </nav>
+    
     <div class="container mt-4">
         <nav aria-label="breadcrumb">
             <ol class="breadcrumb">
@@ -3696,27 +2340,24 @@ def draft_comments(draft_name):
         
         <h1>Comments for {draft_name}</h1>
         <p class="lead">{draft['title']}</p>
-
-        <div class="mb-4">
-            <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
-                <i class="fas fa-arrow-left me-1"></i>Back to Draft
-            </a>
-            <a href="/doc/draft/{draft_name}/history/" class="btn btn-outline-secondary me-2">History</a>
-            <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
-        </div>
         
         <div class="row">
             <div class="col-md-8">
                 <h3>Comments ({len(all_comments)})</h3>
-                <div id="flash-messages"></div>
                 {comments_html}
                 
-                <div class="card mt-4">
+                <div class="card">
                     <div class="card-header">
                         <h5>Add a Comment</h5>
                     </div>
                     <div class="card-body">
+                        <div id="flash-messages"></div>
+                        
                         <form method="POST">
+                            <div class="mb-3">
+                                <label for="author" class="form-label">Your Name</label>
+                                <input type="text" class="form-control" id="author" name="author" placeholder="Enter your name (optional)">
+                            </div>
                             <div class="mb-3">
                                 <label for="comment" class="form-label">Your Comment</label>
                                 <textarea class="form-control" id="comment" name="comment" rows="4" placeholder="Enter your comment here..." required></textarea>
@@ -3733,55 +2374,43 @@ def draft_comments(draft_name):
                         <h5>Document Info</h5>
                     </div>
                     <div class="card-body">
+                        <p><strong>Name:</strong> {draft['name']}</p>
                         <p><strong>Title:</strong> {draft['title']}</p>
-                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
                         <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
-                        <p><strong>Last Updated:</strong> {draft['date']}</p>
+                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
+                        <a href="/doc/draft/{draft_name}/" class="btn btn-outline-primary w-100">Back to Document</a>
                     </div>
                 </div>
             </div>
         </div>
     </div>
     
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         function toggleLike(commentId) {{
-            // Create a form to submit the like action
+            // Create a form to submit the like
             const form = document.createElement('form');
             form.method = 'POST';
-            form.style.display = 'none';
-
-            const actionInput = document.createElement('input');
-            actionInput.type = 'hidden';
-            actionInput.name = 'action';
-            actionInput.value = 'like';
-
-            const commentIdInput = document.createElement('input');
-            commentIdInput.type = 'hidden';
-            commentIdInput.name = 'comment_id';
-            commentIdInput.value = commentId;
-
-            form.appendChild(actionInput);
-            form.appendChild(commentIdInput);
+            form.innerHTML = `
+                <input type="hidden" name="action" value="like">
+                <input type="hidden" name="comment_id" value="${{commentId}}">
+            `;
             document.body.appendChild(form);
             form.submit();
         }}
         
         function toggleReply(commentId) {{
-            // Find the reply form for this comment
             const replyForm = document.getElementById('reply-form-' + commentId);
-            if (replyForm) {{
-                // Toggle visibility
-                if (replyForm.style.display === 'none' || replyForm.style.display === '') {{
+            if (replyForm.style.display === 'none') {{
                 replyForm.style.display = 'block';
             }} else {{
                 replyForm.style.display = 'none';
-                }}
             }}
         }}
     </script>
+</body>
+</html>
 """
-
-    return BASE_TEMPLATE.format(title=f"Comments - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
 
 @app.route('/doc/draft/<draft_name>/history/')
 def draft_history(draft_name):
@@ -3789,36 +2418,70 @@ def draft_history(draft_name):
     if not draft:
         return "Document not found", 404
     
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
-
-    # Get history for this draft
-    history = DocumentHistory.query.filter_by(draft_name=draft_name).order_by(DocumentHistory.timestamp.desc()).all()
+    # Get real history data
+    real_history = DOCUMENT_HISTORY.get(draft_name, [])
+    
+    # Add sample history if no real history exists
+    if not real_history:
+        add_to_document_history(draft_name, 'Document created', 'System', 'Initial version of the document created')
+        real_history = DOCUMENT_HISTORY.get(draft_name, [])
     
     history_html = ""
-    if history:
-        for entry in history:
-            history_html += f"""
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <span class="badge bg-primary">{entry.action}</span>
-                        <small class="text-muted">{entry.timestamp.strftime('%Y-%m-%d %H:%M')}</small>
+    
+    for event in real_history:
+        history_html += f"""
+        <div class="timeline-item mb-3">
+            <div class="d-flex">
+                <div class="flex-shrink-0">
+                    <div class="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center" style="width: 40px; height: 40px;">
+                        <i class="fas fa-circle" style="font-size: 8px;"></i>
                     </div>
-                    <p class="mb-1"><strong>User:</strong> {entry.user}</p>
-                    <p class="mb-0">{entry.details}</p>
+                </div>
+                <div class="flex-grow-1 ms-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <h6 class="card-title mb-1">{event['action']}</h6>
+                                <small class="text-muted">{event['timestamp']}</small>
+                            </div>
+                            <p class="card-text mb-1">{event['details']}</p>
+                            <small class="text-muted">by {event['user']}</small>
+                        </div>
+                    </div>
                 </div>
             </div>
-            """
-    else:
-        history_html = """
-        <div class="alert alert-info">
-            <i class="fas fa-info-circle me-2"></i>
-            No history available for this draft.
         </div>
         """
     
-    content = f"""
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>History for {draft_name} - IETF Datatracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand {{ font-weight: bold; }}
+        .timeline-item {{ position: relative; }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/doc/active/">Active Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
+            </div>
+        </div>
+    </nav>
+    
     <div class="container mt-4">
         <nav aria-label="breadcrumb">
             <ol class="breadcrumb">
@@ -3832,51 +2495,107 @@ def draft_history(draft_name):
         <h1>History for {draft_name}</h1>
         <p class="lead">{draft['title']}</p>
         
-        <div class="mb-4">
-            <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
-                <i class="fas fa-arrow-left me-1"></i>Back to Draft
-            </a>
-            <a href="/doc/draft/{draft_name}/comments/" class="btn btn-outline-secondary me-2">Comments</a>
-            <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
-        </div>
-
+        <div class="row">
+            <div class="col-md-8">
+                <h3>Document History</h3>
                 {history_html}
             </div>
-    """
-
-    return BASE_TEMPLATE.format(title=f"History - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
+            
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Document Info</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Name:</strong> {draft['name']}</p>
+                        <p><strong>Title:</strong> {draft['title']}</p>
+                        <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
+                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
+                        <a href="/doc/draft/{draft_name}/" class="btn btn-outline-primary w-100">Back to Document</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+"""
 
 @app.route('/doc/draft/<draft_name>/revisions/')
 def draft_revisions(draft_name):
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
     if not draft:
         return "Document not found", 404
-
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
-
-    # For now, show a simple revision history
-    # In a real system, this would show actual revision differences
-    revisions_html = f"""
-                <div class="card">
-                    <div class="card-header">
-            <h5>Current Revision: {draft['rev']}</h5>
-                    </div>
-                    <div class="card-body">
-            <p>This draft is currently at revision {draft['rev']}.</p>
-            <p><strong>Published:</strong> {draft['date']}</p>
-            <p><strong>Pages:</strong> {draft['pages']}</p>
-            <p><strong>Words:</strong> {draft['words']}</p>
-                    </div>
-                </div>
-
-    <div class="alert alert-info mt-3">
-        <i class="fas fa-info-circle me-2"></i>
-        Detailed revision history and diff viewing would be implemented in a full datatracker system.
+    
+    revisions_html = ""
+    sample_revisions = [
+        {
+            'rev': '00',
+            'date': '2024-01-15',
+            'size': '45 KB',
+            'author': 'John Smith',
+            'changes': 'Initial version'
+        },
+        {
+            'rev': '01',
+            'date': '2024-01-16',
+            'size': '47 KB',
+            'author': 'Alice Johnson',
+            'changes': 'Added security section, updated references'
+        },
+        {
+            'rev': '02',
+            'date': '2024-01-17',
+            'size': '49 KB',
+            'author': 'Bob Wilson',
+            'changes': 'Updated performance metrics, fixed typos'
+        }
+    ]
+    
+    for revision in sample_revisions:
+        revisions_html += f"""
+        <tr>
+            <td><a href="/doc/draft/{draft_name}/" class="text-decoration-none">{revision['rev']}</a></td>
+            <td>{revision['date']}</td>
+            <td>{revision['size']}</td>
+            <td>{revision['author']}</td>
+            <td>{revision['changes']}</td>
+            <td>
+                <a href="/doc/draft/{draft_name}/" class="btn btn-sm btn-outline-primary">View</a>
+                <a href="/doc/draft/{draft_name}/" class="btn btn-sm btn-outline-secondary">Download</a>
+            </td>
+        </tr>
+        """
+    
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Revisions for {draft_name} - IETF Datatracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand {{ font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">IETF Datatracker</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">Home</a>
+                <a class="nav-link" href="/doc/all/">All Documents</a>
+                <a class="nav-link" href="/doc/active/">Active Documents</a>
+                <a class="nav-link" href="/group/">Working Groups</a>
+                <a class="nav-link" href="/meeting/">Meetings</a>
+                <a class="nav-link" href="/person/">People</a>
             </div>
-    """
-
-    content = f"""
+        </div>
+    </nav>
+    
     <div class="container mt-4">
         <nav aria-label="breadcrumb">
             <ol class="breadcrumb">
@@ -3886,555 +2605,149 @@ def draft_revisions(draft_name):
                 <li class="breadcrumb-item active">Revisions</li>
             </ol>
         </nav>
-
+        
         <h1>Revisions for {draft_name}</h1>
         <p class="lead">{draft['title']}</p>
-
-        <div class="mb-4">
-            <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
-                <i class="fas fa-arrow-left me-1"></i>Back to Draft
-            </a>
-            <a href="/doc/draft/{draft_name}/comments/" class="btn btn-outline-secondary me-2">Comments</a>
-            <a href="/doc/draft/{draft_name}/history/" class="btn btn-outline-secondary">History</a>
-        </div>
-
-        {revisions_html}
-    </div>
-    """
-
-    return BASE_TEMPLATE.format(title=f"Revisions - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
-
-@app.route('/group/')
-def groups():
-    user_menu = generate_user_menu()
-    current_theme = get_current_user().get('theme', 'dark') if get_current_user() else 'light'
-    groups_html = ""
-    for group in GROUPS:
-        # Get chair information from database
-        all_chairs = WorkingGroupChair.query.filter_by(group_acronym=group['acronym']).all()
-        if all_chairs:
-            chair_names = []
-            for chair in all_chairs:
-                chair_name = chair.chair_name
-                if not chair.approved:
-                    chair_name += " (Pending)"
-                chair_names.append(chair_name)
-            chair_display = ", ".join(chair_names)
-        else:
-            chair_display = "TBD"
-
-        groups_html += f"""
-        <div class="col-md-6">
-            <div class="card mb-3">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <a href="/group/{group['acronym']}/">{group['acronym']}</a>
-                    </h5>
-                    <p class="card-text">{group['name']}</p>
-                    <div class="document-meta">
-                        <span class="badge bg-primary">{group['type']}</span>
-                        <span class="badge bg-success ms-2">{group['state']}</span>
-                    </div>
-                    <div class="mt-2">
-                        <small class="text-muted">
-                            Chair: {chair_display}<br>
-                            {group['description']}
-                        </small>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """
-
-    # Get theme from session or user preference
-    current_theme = session.get('theme', 'dark')
-
-    content = f"""
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-12">
-                <h1 class="mb-4">Working Groups</h1>
-                <p class="lead mb-4">Browse the Meta-Layer Desirable Properties working groups.</p>
-
-                <div class="row">
-                    {groups_html}
-                </div>
-            </div>
-        </div>
-    </div>
-    """
-
-    return BASE_TEMPLATE.format(
-        title="Working Groups - MLTF",
-        theme=current_theme,
-        content=content,
-        user_menu=user_menu
-    )
-@app.route('/group/<acronym>/')
-def group_detail(acronym):
-    """Display individual working group details"""
-    # Find the group - handle both full acronyms and short forms (DP1, DP2, etc.)
-    group = None
-    full_acronym = acronym  # Default to the URL parameter
-
-    for g in GROUPS:
-        if g['acronym'] == acronym:
-            group = g
-            full_acronym = g['acronym']
-            break
-        # Also check for short form (dp1 -> dp1-federated-auth, DP1 -> dp1-federated-auth)
-        if acronym.lower().startswith('dp') and g['acronym'].startswith(acronym.lower() + '-'):
-            group = g
-            full_acronym = g['acronym']
-            break
-
-    if not group:
-        return f"Working group '{acronym}' not found. Available: {[g['acronym'] for g in GROUPS]}", 404
-
-    user_menu = generate_user_menu()
-    current_user = get_current_user()
-
-    # Check if user is already a member
-    is_member = False
-    if current_user:
-        membership = WorkingGroupMember.query.filter_by(
-            group_acronym=full_acronym,
-            user_name=current_user['name']
-        ).first()
-        is_member = membership is not None
-
-    # Get chair information using the full acronym
-    all_chairs = WorkingGroupChair.query.filter_by(group_acronym=full_acronym).all()
-    if all_chairs:
-        approved_chairs = [chair.chair_name for chair in all_chairs if chair.approved]
-        pending_chairs = [chair.chair_name for chair in all_chairs if not chair.approved]
-
-        if approved_chairs:
-            chair_name = ", ".join(approved_chairs)
-            if pending_chairs:
-                chair_name += f" (Pending: {', '.join(pending_chairs)})"
-        else:
-            chair_name = f"Pending: {', '.join(pending_chairs)}"
-        chair_approved = len(approved_chairs) > 0
-    else:
-        chair_name = "TBD"
-        chair_approved = False
-
-    join_button = ""
-    if current_user and not is_member:
-        join_button = f'<button class="btn btn-primary" onclick="joinGroup(\'{full_acronym}\')">Join Working Group</button>'
-    elif current_user and is_member:
-        join_button = '<span class="badge bg-success">Member</span> <button class="btn btn-outline-danger btn-sm ms-2" onclick="leaveGroup(\'{full_acronym}\')">Leave</button>'
-
-    # Admin chair management
-    chair_management = ""
-    if current_user and current_user.get('role') == 'admin':
-        # Get all chairs for this group
-        all_chairs = WorkingGroupChair.query.filter_by(group_acronym=full_acronym).all()
-
-        # Create options for the multi-select dropdown
-        chair_options = ""
-        selected_chairs = []
-        for chair in all_chairs:
-            chair_display = chair.chair_name
-            if not chair.approved:
-                chair_display += " (Pending)"
-            chair_options += f'<option value="{chair.id}" {"selected" if chair.approved else ""}>{chair_display}</option>'
-            if chair.approved:
-                selected_chairs.append(chair.chair_name)
-
-        # Convert selected chairs to JSON for JavaScript
-        selected_chairs_json = json.dumps(selected_chairs)
-
-        chair_management = f'''
-        <div class="mt-4 p-3 border rounded">
-            <h5>Chair Management</h5>
-            <div class="mb-3">
-                <label class="form-label">Current Chairs:</label>
-                <select multiple class="form-select" id="chair-select-{full_acronym}" size="4">
-                    {chair_options}
-                </select>
-                <div class="form-text">Select multiple chairs using Ctrl+Click (Cmd+Click on Mac)</div>
-            </div>
-            <div class="d-flex gap-2">
-                <input type="text" id="new-chair-input-{full_acronym}" class="form-control" placeholder="Add new chair name">
-                <button type="button" class="btn btn-success" onclick="addChair('{full_acronym}')">Add Chair</button>
-                <button type="button" class="btn btn-warning" onclick="updateChairs('{full_acronym}')">Update Chairs</button>
-        </div>
-            <div class="mt-2">
-                <small class="text-muted">Current approved chairs: {", ".join(selected_chairs) if selected_chairs else "None"}</small>
-            </div>
-        </div>
-        '''
-
-    # Get theme from session or user preference
-    current_theme = session.get('theme', current_user.get('theme', 'dark') if current_user else 'dark')
-
-    content = f"""
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-12">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="/">Home</a></li>
-                        <li class="breadcrumb-item"><a href="/group/">Working Groups</a></li>
-                        <li class="breadcrumb-item active">{group['name']}</li>
-            </ol>
-        </nav>
-        
-                <div class="card mb-4">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <div>
-                                <h1 class="card-title mb-2">{group['name']}</h1>
-                                <p class="text-muted mb-3">{group['acronym'].upper()}</p>
-                                <p class="card-text">{group['description']}</p>
-                            </div>
-                            <div class="text-end">
-                                {join_button}
-                            </div>
-                        </div>
-                    </div>
-                </div>
         
         <div class="row">
             <div class="col-md-8">
-                        <div class="card mb-4">
-                            <div class="card-header">
-                                <h5 class="mb-0">About</h5>
+                <h3>Document Revisions</h3>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Revision</th>
+                                <th>Date</th>
+                                <th>Size</th>
+                                <th>Author</th>
+                                <th>Changes</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {revisions_html}
+                        </tbody>
+                    </table>
                 </div>
-                            <div class="card-body">
-                                <p>{group['description']}</p>
             </div>
-                        </div>
-                    </div>
+            
             <div class="col-md-4">
-                        <div class="card mb-4">
+                <div class="card">
                     <div class="card-header">
-                                <h5 class="mb-0">Leadership</h5>
+                        <h5>Document Info</h5>
                     </div>
                     <div class="card-body">
-                                <p><strong>Chair:</strong> {chair_name}</p>
-                                {'<span class="badge bg-warning">Pending Approval</span>' if not chair_approved and chair_name != "TBD" else ''}
-                            </div>
-                        </div>
-
-                        {chair_management}
+                        <p><strong>Name:</strong> {draft['name']}</p>
+                        <p><strong>Title:</strong> {draft['title']}</p>
+                        <p><strong>Status:</strong> <span class="badge bg-secondary">{draft['status']}</span></p>
+                        <p><strong>Authors:</strong> {', '.join(draft['authors'])}</p>
+                        <a href="/doc/draft/{draft_name}/" class="btn btn-outline-primary w-100">Back to Document</a>
                     </div>
                 </div>
             </div>
         </div>
     </div>
     
-    <script>
-    function joinGroup(acronym) {{
-        fetch(`/group/${{acronym}}/join`, {{
-            method: 'POST',
-            headers: {{
-                'Content-Type': 'application/json',
-            }}
-        }})
-        .then(response => response.json())
-        .then(data => {{
-            if (data.success) {{
-                location.reload();
-            }} else {{
-                alert('Error joining group: ' + data.message);
-            }}
-        }})
-        .catch(error => {{
-            console.error('Error:', error);
-            alert('Error joining group');
-        }});
-    }}
-
-    function leaveGroup(acronym) {{
-        fetch(`/group/${{acronym}}/leave`, {{
-            method: 'POST',
-            headers: {{
-                'Content-Type': 'application/json',
-            }}
-        }})
-        .then(response => response.json())
-        .then(data => {{
-            if (data.success) {{
-                location.reload();
-            }} else {{
-                alert('Error leaving group: ' + data.message);
-            }}
-        }})
-        .catch(error => {{
-            console.error('Error:', error);
-            alert('Error leaving group');
-        }});
-    }}
-
-    function addChair(acronym) {{
-        const input = document.getElementById(`new-chair-input-${{acronym}}`);
-        const chairName = input.value.trim();
-        if (!chairName) {{
-            alert('Please enter a chair name');
-            return;
-        }}
-
-        fetch(`/group/${{acronym}}/add_chair`, {{
-            method: 'POST',
-            headers: {{
-                'Content-Type': 'application/json',
-            }},
-            body: JSON.stringify({{ chair_name: chairName }})
-        }})
-        .then(response => response.json())
-        .then(data => {{
-            if (data.success) {{
-                location.reload();
-            }} else {{
-                alert('Error adding chair: ' + data.message);
-            }}
-        }})
-        .catch(error => {{
-            console.error('Error:', error);
-            alert('Error adding chair');
-        }});
-    }}
-
-    function updateChairs(acronym) {{
-        const select = document.getElementById(`chair-select-${{acronym}}`);
-        const selectedOptions = Array.from(select.selectedOptions);
-        const chairIds = selectedOptions.map(option => parseInt(option.value));
-
-        fetch(`/group/${{acronym}}/update_chairs`, {{
-            method: 'POST',
-            headers: {{
-                'Content-Type': 'application/json',
-            }},
-            body: JSON.stringify({{ chair_ids: chairIds }})
-        }})
-        .then(response => response.json())
-        .then(data => {{
-            if (data.success) {{
-                location.reload();
-            }} else {{
-                alert('Error updating chairs: ' + data.message);
-            }}
-        }})
-        .catch(error => {{
-            console.error('Error:', error);
-            alert('Error updating chairs');
-        }});
-    }}
-
-    function removeChair(acronym) {{
-        const select = document.getElementById(`chair-select-${{acronym}}`);
-        const selectedOptions = Array.from(select.selectedOptions);
-
-        if (selectedOptions.length === 0) {{
-            alert('Please select chairs to remove');
-            return;
-        }}
-
-        if (confirm('Are you sure you want to remove ' + selectedOptions.length + ' chair(s)?')) {{
-            const chairIds = selectedOptions.map(option => parseInt(option.value));
-
-            fetch(`/group/${{acronym}}/remove_chairs`, {{
-                method: 'POST',
-                headers: {{
-                    'Content-Type': 'application/json',
-                }},
-                body: JSON.stringify({{ chair_ids: chairIds }})
-            }})
-            .then(response => response.json())
-            .then(data => {{
-                if (data.success) {{
-                    location.reload();
-                }} else {{
-                    alert('Error removing chairs: ' + data.message);
-                }}
-            }})
-            .catch(error => {{
-                console.error('Error:', error);
-                alert('Error removing chairs');
-            }});
-        }}
-    }}
-    </script>
-    """
-
-    return BASE_TEMPLATE.format(
-        title=f"{group['name']} - MLTF",
-        theme=current_theme,
-        content=content,
-        user_menu=user_menu
-    )
-
-@app.route('/group/<acronym>/join', methods=['POST'])
-@require_auth
-def join_group(acronym):
-    current_user = get_current_user()
-    if not current_user:
-        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
-
-    # Check if already a member
-    existing = WorkingGroupMember.query.filter_by(
-        group_acronym=acronym,
-        user_name=current_user['name']
-    ).first()
-
-    if existing:
-        return jsonify({'success': False, 'message': 'Already a member'}), 400
-
-    # Add membership
-    membership = WorkingGroupMember(
-        group_acronym=acronym,
-        user_name=current_user['name']
-    )
-    db.session.add(membership)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Joined successfully'})
-
-@app.route('/group/<acronym>/leave', methods=['POST'])
-@require_auth
-def leave_group(acronym):
-    current_user = get_current_user()
-    if not current_user:
-        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
-
-    # Remove membership
-    membership = WorkingGroupMember.query.filter_by(
-        group_acronym=acronym,
-        user_name=current_user['name']
-    ).first()
-
-    if not membership:
-        return jsonify({'success': False, 'message': 'Not a member'}), 400
-
-    db.session.delete(membership)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Left successfully'})
-
-@app.route('/group/<acronym>/add_chair', methods=['POST'])
-@require_role('admin')
-def add_group_chair(acronym):
-    data = request.get_json()
-    chair_name = data.get('chair_name', '').strip()
-    if not chair_name:
-        return jsonify({'success': False, 'message': 'Chair name required'}), 400
-
-    # Check if chair already exists
-    existing = WorkingGroupChair.query.filter_by(group_acronym=acronym, chair_name=chair_name).first()
-    if existing:
-        return jsonify({'success': False, 'message': 'Chair already exists'}), 400
-
-    # Add new chair (unapproved)
-    chair = WorkingGroupChair(
-        group_acronym=acronym,
-        chair_name=chair_name,
-        approved=False
-    )
-    db.session.add(chair)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Chair added successfully'})
-
-@app.route('/group/<acronym>/update_chairs', methods=['POST'])
-@require_role('admin')
-def update_group_chairs(acronym):
-    data = request.get_json()
-    chair_ids = data.get('chair_ids', [])
-
-    # Mark all chairs as unapproved first
-    WorkingGroupChair.query.filter_by(group_acronym=acronym).update({'approved': False})
-
-    # Approve selected chairs
-    if chair_ids:
-        WorkingGroupChair.query.filter(
-            WorkingGroupChair.group_acronym == acronym,
-            WorkingGroupChair.id.in_(chair_ids)
-        ).update({'approved': True})
-
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Chairs updated successfully'})
-
-@app.route('/group/<acronym>/remove_chairs', methods=['POST'])
-@require_role('admin')
-def remove_group_chairs(acronym):
-    data = request.get_json()
-    chair_ids = data.get('chair_ids', [])
-
-    if not chair_ids:
-        return jsonify({'success': False, 'message': 'No chairs selected'}), 400
-
-    # Remove selected chairs
-    WorkingGroupChair.query.filter(
-        WorkingGroupChair.group_acronym == acronym,
-        WorkingGroupChair.id.in_(chair_ids)
-    ).delete()
-
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Chairs removed successfully'})
-
-@app.route('/person/')
-def people():
-    """People directory - coming soon"""
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
-
-    content = """
-    <div class="container mt-4">
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="text-center">
-                    <i class="fas fa-user-friends fa-4x text-muted mb-4"></i>
-                    <h1 class="mb-3">People Directory</h1>
-                    <p class="lead text-muted mb-4">Coming Soon</p>
-                    <p class="mb-4">We're building a comprehensive directory of MLTF participants and contributors. This feature will help you connect with other members of the community.</p>
-                    <a href="/" class="btn btn-primary">Return to Home</a>
-        </div>
-            </div>
-        </div>
-        </div>
-        """
-    
-    return BASE_TEMPLATE.format(
-        title="People Directory - MLTF",
-        theme=session.get('theme', 'dark'),
-        content=content,
-        user_menu=user_menu
-    )
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+"""
 
 @app.route('/meeting/')
 def meetings():
-    """Meetings - coming soon"""
-    user_menu = generate_user_menu()
-    current_theme = session.get('theme', 'dark')
+    return "<h1>Meetings</h1><p>This would show IETF meetings information.</p>"
 
-    content = """
-    <div class="container mt-4">
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="text-center">
-                    <i class="fas fa-calendar fa-4x text-muted mb-4"></i>
-                    <h1 class="mb-3">Meetings</h1>
-                    <p class="lead text-muted mb-4">Coming Soon</p>
-                    <p class="mb-4">Information about upcoming MLTF meetings and sessions will be available here. Stay tuned for announcements about our first events.</p>
-                    <a href="/" class="btn btn-primary">Return to Home</a>
-                </div>
-            </div>
+@app.route('/person/')
+def people():
+    return "<h1>People</h1><p>This would show IETF participants directory.</p>"
+
+@app.route('/submit/', methods=['GET', 'POST'])
+def submit_draft():
+    """Draft submission page"""
+    if request.method == 'POST':
+        # Get form data
+        title = request.form.get('title', '').strip()
+        authors = request.form.get('authors', '').strip()
+        abstract = request.form.get('abstract', '').strip()
+        group = request.form.get('group', '').strip()
+        
+        # Handle file upload
+        if 'file' not in request.files:
+            flash('No file selected', 'error')
+            return redirect(url_for('submit_draft'))
+        
+        file = request.files['file']
+        if file.filename == '':
+            flash('No file selected', 'error')
+            return redirect(url_for('submit_draft'))
+        
+        if file and allowed_file(file.filename):
+            # Generate submission ID
+            submission_id = str(uuid.uuid4())[:8]
+            
+            # Save file
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(UPLOAD_FOLDER, f"{submission_id}_{filename}")
+            file.save(file_path)
+            
+            # Generate draft name
+            author_list = [a.strip() for a in authors.split(',') if a.strip()]
+            draft_name = generate_draft_name(title, author_list)
+            
+            # Store submission
+            SUBMISSIONS[submission_id] = {
+                'id': submission_id,
+                'title': title,
+                'authors': author_list,
+                'abstract': abstract,
+                'group': group,
+                'filename': filename,
+                'file_path': file_path,
+                'draft_name': draft_name,
+                'status': 'submitted',
+                'submitted_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'submitted_by': 'Anonymous User'
+            }
+            
+            flash(f'Draft submitted successfully! Submission ID: {submission_id}', 'success')
+            return redirect(url_for('submission_status', submission_id=submission_id))
+        else:
+            flash('Invalid file type. Please upload PDF, TXT, XML, DOC, or DOCX files.', 'error')
+    
+    # Generate user menu
+    current_user = get_current_user()
+    if current_user:
+        user_menu = f"""
+        <div class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                {current_user['name']}
+            </a>
+            <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
+                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
+            </ul>
         </div>
-    </div>
-    """
+        """
+    else:
+        user_menu = """
+        <div class="nav-item">
+            <a class="nav-link" href="/login/">Sign In</a>
+        </div>
+        """
+    
+    return render_template_string(BASE_TEMPLATE.format(title="Submit Draft - IETF Datatracker", user_menu=user_menu, content=SUBMIT_TEMPLATE))
 
-    return BASE_TEMPLATE.format(
-        title="Meetings - MLTF",
-        theme=session.get('theme', 'dark'),
-        content=content,
-        user_menu=user_menu
-    )
+@app.route('/submit/status/<submission_id>/')
+def submission_status(submission_id):
+    """Submission status page"""
+    submission = SUBMISSIONS.get(submission_id)
+    if not submission:
+        flash('Submission not found', 'error')
+        return redirect(url_for('submit_draft'))
+    
+    return render_template_string(BASE_TEMPLATE.format(title=f"Submission Status - {submission_id}", content=SUBMISSION_STATUS_TEMPLATE), submission=submission)
 
 if __name__ == '__main__':
+    print("Starting IETF Data Viewer...")
+    print(f"Loaded {len(DRAFTS)} drafts and {len(GROUPS)} groups")
     app.run(host='0.0.0.0', port=8000, debug=True)
-
