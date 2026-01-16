@@ -1486,14 +1486,46 @@ SUBMISSION_STATUS_TEMPLATE = """
 </div>
 
 <style>
+/* Ensure container properly contains all content */
+.container {
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.row {
+    margin-left: 0;
+    margin-right: 0;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+.col-md-8, .col-md-4 {
+    box-sizing: border-box;
+    padding-left: 15px;
+    padding-right: 15px;
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+/* Ensure timeline and all items are contained */
 .timeline {
     position: relative;
-    padding-left: 30px;
+    padding-left: 40px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
 }
 
 .timeline-item {
     position: relative;
     margin-bottom: 20px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
 }
 
 .timeline-marker {
@@ -1505,6 +1537,14 @@ SUBMISSION_STATUS_TEMPLATE = """
     border-radius: 50%;
     border: 2px solid #fff;
     box-shadow: 0 0 0 2px #dee2e6;
+    z-index: 2;
+}
+
+.timeline-content {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
 }
 
 .timeline-content h6 {
@@ -1514,6 +1554,15 @@ SUBMISSION_STATUS_TEMPLATE = """
 
 .timeline-content p {
     margin-bottom: 0;
+}
+
+/* Ensure cards in sidebar are contained */
+.col-md-4 .card {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-left: 0;
+    margin-right: 0;
 }
 </style>
 """
