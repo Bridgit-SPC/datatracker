@@ -257,13 +257,16 @@ def generate_user_menu():
     current_user = get_current_user()
     if current_user:
         user_role = current_user.get('role', 'user')
+        is_admin = user_role in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']
+        admin_link = '<li><a class="dropdown-item" href="/admin/">Admin Dashboard</a></li>' if is_admin else ''
         return f"""
         <div class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                 {current_user['name']}
             </a>
             <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/admin/">Admin Dashboard</a></li>
+                <li><a class="dropdown-item" href="/submit/status/">My Submissions</a></li>
+                {admin_link}
                 <li><a class="dropdown-item" href="/profile/">Profile</a></li>
                 <li><a class="dropdown-item" href="/logout/">Logout</a></li>
             </ul>
@@ -3139,17 +3142,7 @@ def admin_chairs():
     current_theme = session.get('theme', 'dark')
 
     # Generate user menu
-    user_menu = f"""
-    <div class="nav-item dropdown">
-        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-            {current_user['name'] if current_user else 'Admin'}
-        </a>
-        <ul class="dropdown-menu">
-            <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-            <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-        </ul>
-    </div>
-    """
+    user_menu = generate_user_menu()
 
     # Get statistics
     total_chairs = len(WORKING_GROUP_CHAIRS)
@@ -3264,17 +3257,7 @@ def add_chair():
     current_theme = session.get('theme', 'dark')
 
     # Generate user menu
-    user_menu = f"""
-    <div class="nav-item dropdown">
-        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-            {current_user['name'] if current_user else 'Admin'}
-        </a>
-        <ul class="dropdown-menu">
-            <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-            <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-        </ul>
-    </div>
-    """
+    user_menu = generate_user_menu()
 
     if request.method == 'POST':
         chair_name = request.form.get('chair_name', '').strip()
@@ -3386,34 +3369,7 @@ def home():
     # Generate user menu
     current_user = get_current_user()
     current_theme = current_user.get('theme', 'dark') if current_user else 'light'
-
-    if current_user:
-        user_role = current_user.get('role', 'user')
-        is_admin = user_role in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']
-
-        admin_link = '<li><a class="dropdown-item" href="/admin/">Admin Dashboard</a></li>' if is_admin else ''
-
-        user_menu = f"""
-        <div class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                {current_user['name']}
-            </a>
-            <ul class="dropdown-menu">
-                {admin_link}
-                <li><a class="dropdown-item" href="/profile/">Profile</a></li>
-                <li><a class="dropdown-item" href="/logout/">Logout</a></li>
-            </ul>
-        </div>
-        """
-    else:
-        user_menu = """
-        <div class="nav-item">
-            <a class="nav-link" href="/login/">Sign In</a>
-        </div>
-        <div class="nav-item">
-            <a class="nav-link" href="/register/">Register</a>
-        </div>
-        """
+    user_menu = generate_user_menu()
     
     return BASE_TEMPLATE.format(title="MLTF", theme=current_theme, user_menu=user_menu, content=f"""
     
@@ -3575,6 +3531,8 @@ def draft_detail(draft_name):
 
     # Load full document content
     document_content = "Document content not available."
+    calculated_pages = draft.get('pages', 1)
+    calculated_words = draft.get('words', 0)
 
     # Try to get content from submission file first
     if submission and submission.file_path and os.path.exists(submission.file_path):
@@ -3583,6 +3541,11 @@ def draft_detail(draft_name):
             if ext in ['.txt', '.xml']:
                 with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
                     document_content = f.read()
+                # Calculate words and pages from text
+                words = len(document_content.split())
+                # Estimate pages (assuming ~500 words per page)
+                calculated_pages = max(1, (words + 499) // 500)
+                calculated_words = words
             elif ext == '.docx':
                 from docx import Document
                 doc = Document(submission.file_path)
@@ -3596,6 +3559,10 @@ def draft_detail(draft_name):
                             if cell.text.strip():
                                 content_parts.append(cell.text)
                 document_content = '\n\n'.join(content_parts)
+                # Calculate words and pages
+                words = len(document_content.split())
+                calculated_pages = max(1, (words + 499) // 500)
+                calculated_words = words
             elif ext == '.pdf':
                 from PyPDF2 import PdfReader
                 reader = PdfReader(submission.file_path)
@@ -3609,10 +3576,18 @@ def draft_detail(draft_name):
                 import re
                 document_content = re.sub(r'\n+', '\n', document_content)
                 document_content = re.sub(r' +', ' ', document_content)
+                # Calculate words and pages
+                words = len(document_content.split())
+                calculated_pages = len(reader.pages) if reader.pages else max(1, (words + 499) // 500)
+                calculated_words = words
             else:
                 document_content = f"Document content cannot be displayed for {ext.upper()} files. Please download to view."
         except Exception as e:
             document_content = f"Error loading document content: {str(e)}"
+        # Update draft with calculated values
+        if submission:
+            draft['pages'] = calculated_pages
+            draft['words'] = calculated_words
 
     # If no submission content, try to get from DRAFTS data
     elif draft and 'name' in draft:
@@ -3680,16 +3655,16 @@ Meta-Layer Initiative
                         <h5>Document Information</h5>
                     </div>
                     <div class="card-body">
-                        <table class="table">
-                            <tr><td><strong>Name:</strong></td><td>{draft['name']}</td></tr>
-                            <tr><td><strong>Title:</strong></td><td>{draft['title']}</td></tr>
-                            <tr><td><strong>Revision:</strong></td><td>{draft['rev']}</td></tr>
-                            <tr><td><strong>Status:</strong></td><td><span class="badge bg-secondary">{draft['status']}</span></td></tr>
-                            <tr><td><strong>Pages:</strong></td><td>{draft['pages']}</td></tr>
-                            <tr><td><strong>Words:</strong></td><td>{draft['words']}</td></tr>
-                            <tr><td><strong>Authors:</strong></td><td>{', '.join(draft['authors'])}</td></tr>
-                            <tr><td><strong>Group:</strong></td><td>{draft['group']}</td></tr>
-                            <tr><td><strong>Date:</strong></td><td>{draft['date']}</td></tr>
+                        <table class="table" style="color: var(--text-primary) !important;">
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Draft ID:</strong></td><td style="color: var(--text-primary) !important;">{draft['name']}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Title:</strong></td><td style="color: var(--text-primary) !important;">{draft['title']}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Revision:</strong></td><td style="color: var(--text-primary) !important;">{draft['rev']}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Status:</strong></td><td style="color: var(--text-primary) !important;"><span class="badge bg-secondary">{draft['status']}</span></td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Pages:</strong></td><td style="color: var(--text-primary) !important;">{draft['pages']}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Words:</strong></td><td style="color: var(--text-primary) !important;">{draft['words']}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Authors:</strong></td><td style="color: var(--text-primary) !important;">{', '.join(draft['authors'])}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Group:</strong></td><td style="color: var(--text-primary) !important;">{draft['group'] or 'N/A'}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>Date:</strong></td><td style="color: var(--text-primary) !important;">{draft['date']}</td></tr>
                         </table>
                     </div>
                 </div>
@@ -3733,7 +3708,7 @@ Meta-Layer Initiative
                         <a href="/doc/draft/{draft['name']}/comments/" class="btn btn-primary w-100 mb-2">View Comments ({Comment.query.filter_by(draft_name=draft_name).count()})</a>
                         <a href="/doc/draft/{draft['name']}/history/" class="btn btn-secondary w-100 mb-2">View History</a>
                         <a href="/doc/draft/{draft['name']}/revisions/" class="btn btn-info w-100 mb-2">View Revisions</a>
-                        <a href="/doc/draft/{draft['name']}/" class="btn btn-outline-primary w-100">Download PDF</a>
+                        <a href="/download/{draft['name']}" class="btn btn-outline-primary w-100">Download Document</a>
                     </div>
                 </div>
 
@@ -3772,7 +3747,22 @@ Meta-Layer Initiative
 @app.route('/doc/draft/<draft_name>/comments/', methods=['GET', 'POST'])
 @require_auth
 def draft_comments(draft_name):
+    # First try to find in DRAFTS (published documents)
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    
+    # If not found in DRAFTS, try to find as a submission ID
+    if not draft:
+        submission = Submission.query.filter_by(id=draft_name).first()
+        if submission:
+            draft = {
+                'name': submission.id,
+                'title': submission.title,
+                'authors': submission.authors,
+                'status': submission.status,
+                'group': submission.group,
+                'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+            }
+    
     if not draft:
         return "Document not found", 404
 
@@ -3963,7 +3953,22 @@ def draft_comments(draft_name):
 
 @app.route('/doc/draft/<draft_name>/history/')
 def draft_history(draft_name):
+    # First try to find in DRAFTS (published documents)
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    
+    # If not found in DRAFTS, try to find as a submission ID
+    if not draft:
+        submission = Submission.query.filter_by(id=draft_name).first()
+        if submission:
+            draft = {
+                'name': submission.id,
+                'title': submission.title,
+                'authors': submission.authors,
+                'status': submission.status,
+                'group': submission.group,
+                'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+            }
+    
     if not draft:
         return "Document not found", 404
 
@@ -4026,9 +4031,85 @@ def draft_history(draft_name):
 
 @app.route('/doc/draft/<draft_name>/revisions/')
 def draft_revisions(draft_name):
+    # First try to find in DRAFTS (published documents)
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    
+    # If not found in DRAFTS, try to find as a submission ID
+    submission = None
+    if not draft:
+        submission = Submission.query.filter_by(id=draft_name).first()
+        if submission:
+            draft = {
+                'name': submission.id,
+                'title': submission.title,
+                'authors': submission.authors,
+                'status': submission.status,
+                'group': submission.group,
+                'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+                'rev': '00',
+                'pages': 1,
+                'words': 0,
+            }
+    
     if not draft:
         return "Document not found", 404
+
+    # Calculate pages and words from document content if it's a submission
+    calculated_pages = draft.get('pages', 1)
+    calculated_words = draft.get('words', 0)
+    
+    if submission and submission.file_path and os.path.exists(submission.file_path):
+        _, ext = os.path.splitext(submission.filename.lower())
+        try:
+            if ext in ['.txt', '.xml']:
+                with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    document_content = f.read()
+                # Calculate words and pages from text
+                words = len(document_content.split())
+                # Estimate pages (assuming ~500 words per page)
+                calculated_pages = max(1, (words + 499) // 500)
+                calculated_words = words
+            elif ext == '.docx':
+                from docx import Document
+                doc = Document(submission.file_path)
+                content_parts = []
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        content_parts.append(paragraph.text)
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                content_parts.append(cell.text)
+                document_content = '\n\n'.join(content_parts)
+                # Calculate words and pages
+                words = len(document_content.split())
+                calculated_pages = max(1, (words + 499) // 500)
+                calculated_words = words
+            elif ext == '.pdf':
+                from PyPDF2 import PdfReader
+                reader = PdfReader(submission.file_path)
+                content_parts = []
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text.strip():
+                        content_parts.append(text)
+                document_content = '\n\n'.join(content_parts)
+                # Clean up PDF text
+                import re
+                document_content = re.sub(r'\n+', '\n', document_content)
+                document_content = re.sub(r' +', ' ', document_content)
+                # Calculate words and pages
+                words = len(document_content.split())
+                calculated_pages = len(reader.pages) if reader.pages else max(1, (words + 499) // 500)
+                calculated_words = words
+        except Exception as e:
+            # If calculation fails, keep default values
+            pass
+        
+        # Update draft with calculated values
+        draft['pages'] = calculated_pages
+        draft['words'] = calculated_words
 
     user_menu = generate_user_menu()
     current_theme = session.get('theme', 'dark')
