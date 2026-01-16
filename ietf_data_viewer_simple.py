@@ -1342,36 +1342,36 @@ SUBMISSION_STATUS_TEMPLATE = """
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Status:</strong></div>
                         <div class="col-sm-9">
-                            <span class="badge bg-primary">{{ submission.status.title() }}</span>
+                            <span class="badge bg-primary">{{ submission_status_title }}</span>
                         </div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Title:</strong></div>
-                        <div class="col-sm-9">{{ submission.title }}</div>
+                        <div class="col-sm-9">{{ submission_title }}</div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Authors:</strong></div>
-                        <div class="col-sm-9">{{ submission.authors | join(', ') }}</div>
+                        <div class="col-sm-9">{{ submission_authors_joined }}</div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Draft Name:</strong></div>
-                        <div class="col-sm-9"><code>{{ submission.draft_name }}</code></div>
+                        <div class="col-sm-9"><code>{{ submission_draft_name }}</code></div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Submitted:</strong></div>
-                        <div class="col-sm-9">{{ submission.submitted_at }}</div>
+                        <div class="col-sm-9">{{ submission_submitted_at }}</div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>File:</strong></div>
                         <div class="col-sm-9">
-                            <code>{{ submission.filename }}</code>
-                            <a href="/download/{{ submission.id }}" class="btn btn-sm btn-outline-primary ms-2">Download</a>
+                            <code>{{ submission_filename }}</code>
+                            <a href="/download/{{ submission_id }}" class="btn btn-sm btn-outline-primary ms-2">Download</a>
                         </div>
                     </div>
-                    {% if submission.abstract %}
+                    {% if submission_abstract %}
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Abstract:</strong></div>
-                        <div class="col-sm-9">{{ submission.abstract }}</div>
+                        <div class="col-sm-9">{{ submission_abstract }}</div>
                     </div>
                     {% endif %}
 
@@ -1380,14 +1380,14 @@ SUBMISSION_STATUS_TEMPLATE = """
                         <pre class="mb-0" style="font-size: 0.9em; max-height: 400px; overflow-y: auto; color: var(--text-primary);">{{ file_content }}</pre>
                     </div>
 
-                    {% if submission.status == 'submitted' and (current_user and (current_user.role in ['admin', 'editor'] or current_user.name in ['admin', 'Admin User'])) %}
+                    {% if is_submitted and is_admin %}
                     <div class="row mb-3">
                         <div class="col-sm-3"><strong>Actions:</strong></div>
                         <div class="col-sm-9">
-                            <form method="POST" action="/submit/approve/{{ submission.id }}" style="display: inline;">
+                            <form method="POST" action="/submit/approve/{{ submission_id }}" style="display: inline;">
                                 <button type="submit" class="btn btn-success btn-sm">Approve & Publish</button>
                             </form>
-                            <form method="POST" action="/submit/reject/{{ submission.id }}" style="display: inline; margin-left: 10px;">
+                            <form method="POST" action="/submit/reject/{{ submission_id }}" style="display: inline; margin-left: 10px;">
                                 <button type="submit" class="btn btn-danger btn-sm">Reject</button>
                             </form>
                         </div>
@@ -1406,20 +1406,20 @@ SUBMISSION_STATUS_TEMPLATE = """
                             <div class="timeline-marker bg-success"></div>
                             <div class="timeline-content">
                                 <h6>Submitted</h6>
-                                <p class="text-muted small">{{ submission.submitted_at }}</p>
+                                <p class="text-muted small">{{ submission_submitted_at }}</p>
                             </div>
                         </div>
                         <div class="timeline-item">
-                            {% if submission.status in ['approved', 'rejected'] %}
+                            {% if is_approved_or_rejected %}
                             <div class="timeline-marker bg-success"></div>
                             <div class="timeline-content">
                                 <h6>Initial Review</h6>
                                 <p class="text-muted small">
-                                    {{ 'Completed' if submission.status == 'approved' else 'Rejected' }}
-                                    {% if submission.approved_at %}
-                                    - {{ submission.approved_at }}
-                                    {% elif submission.rejected_at %}
-                                    - {{ submission.rejected_at }}
+                                    {% if is_approved %}Completed{% else %}Rejected{% endif %}
+                                    {% if submission_approved_at %}
+                                    - {{ submission_approved_at }}
+                                    {% elif submission_rejected_at %}
+                                    - {{ submission_rejected_at }}
                                     {% endif %}
                                 </p>
                             </div>
@@ -1431,7 +1431,7 @@ SUBMISSION_STATUS_TEMPLATE = """
                             </div>
                             {% endif %}
                         </div>
-                        {% if submission.status == 'approved' %}
+                        {% if is_approved %}
                         <div class="timeline-item">
                             <div class="timeline-marker bg-primary"></div>
                             <div class="timeline-content">
@@ -1694,81 +1694,37 @@ def submission_detail(submission_id):
             file_size_kb = file_size / 1024
             file_content = f"Error extracting text from {ext[1:].upper()} file ({file_size_kb:.1f} KB): {str(e)}"
 
-    # Start with template and do all replacements
-    content = SUBMISSION_STATUS_TEMPLATE
-
-    # First, handle abstract conditional
-    import re
-    if submission.abstract:
-        content = re.sub(
-            r'{% if submission\.abstract %}(.*?){% endif %}',
-            r'\1',
-            content,
-            flags=re.DOTALL
-        )
-    else:
-        content = re.sub(r'{% if submission\.abstract %}.*?{% endif %}', '', content, flags=re.DOTALL)
-
-    # Handle admin actions
-    if current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']):
-        content = content.replace(
-            '{% if submission.status == \'submitted\' and (current_user and (current_user.role in [\'admin\', \'editor\'] or current_user.name in [\'admin\', \'Admin User\'])) %}',
-            '<div class="row mb-3"><div class="col-sm-3"><strong>Actions:</strong></div><div class="col-sm-9">'
-        ).replace(
-            '{% endif %}',
-            '</div></div>'
-        )
-    else:
-        # Remove admin sections for regular users
-        content = re.sub(r'{% if submission\.status == \'submitted\' and .*?%}.*?{% endif %}', '', content, flags=re.DOTALL)
-
-    # Handle status conditionals
-    if submission.status in ['approved', 'rejected']:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
-    else:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
-
-    if submission.status == 'approved':
-        content = content.replace('{% if submission.status == \'approved\' %}', '').replace('{% else %}', '').replace('{% endif %}', '')
-    else:
-        content = content.replace('{% if submission.status == \'approved\' %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
-
-    # NOW do placeholder replacement after conditionals are processed
-    content = content.replace(
-        '{{ submission.id }}', str(submission.id or '')
-    ).replace(
-        '{{ submission.status.title() }}', str(submission.status.title() or '')
-    ).replace(
-        '{{ submission.title }}', str(submission.title or '')
-    ).replace(
-        '{{ submission.abstract }}', str(submission.abstract or '')
-    ).replace(
-        '{{ submission.authors | join(\', \') }}', str(', '.join(submission.authors) or '')
-    ).replace(
-        '{{ submission.draft_name }}', str(getattr(submission, 'draft_name', submission.id) or '')
-    ).replace(
-        '{{ submission.submitted_at }}', str(submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if submission.submitted_at else '')
-    ).replace(
-        '{{ submission.filename }}', str(submission.filename or '')
-    ).replace(
-        '{{ file_content }}', str(file_content or '')
-    ).replace(
-        '{{ submission.approved_at }}', str(submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else '')
-    ).replace(
-        '{{ submission.rejected_at }}', str(submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else '')
-    )
-
-    if submission.status in ['approved', 'rejected']:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '').replace('{% else %}', '').replace('{% endif %}', '')
-    else:
-        content = content.replace('{% if submission.status in [\'approved\', \'rejected\'] %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
-
-    if submission.status == 'approved':
-        content = content.replace('{% if submission.status == \'approved\' %}', '').replace('{% else %}', '').replace('{% endif %}', '')
-    else:
-        content = content.replace('{% if submission.status == \'approved\' %}', '<!--').replace('{% else %}', '-->').replace('{% endif %}', '')
-
-    return BASE_TEMPLATE.format(title=f"Submission {submission.id} - MLTF", theme=current_theme, user_menu=user_menu, content=content)
+    # Use Flask's Jinja2 render_template_string properly - BEST PRACTICE
+    # Prepare template variables
+    template_vars = {
+        'submission': submission,
+        'current_user': current_user,
+        'file_content': file_content,
+        'submission_id': submission.id,
+        'submission_status': submission.status,
+        'submission_status_title': submission.status.title(),
+        'submission_title': submission.title or '',
+        'submission_abstract': submission.abstract or '',
+        'submission_authors': submission.authors,
+        'submission_authors_joined': ', '.join(submission.authors) if submission.authors else '',
+        'submission_draft_name': getattr(submission, 'draft_name', submission.id) or '',
+        'submission_submitted_at': submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if submission.submitted_at else '',
+        'submission_filename': submission.filename or '',
+        'submission_approved_at': submission.approved_at.strftime('%Y-%m-%d %H:%M:%S') if submission.approved_at else '',
+        'submission_rejected_at': submission.rejected_at.strftime('%Y-%m-%d %H:%M:%S') if submission.rejected_at else '',
+        'is_admin': current_user and (current_user.get('role') in ['admin', 'editor'] or current_user['name'] in ['admin', 'Admin User']),
+        'is_approved': submission.status == 'approved',
+        'is_rejected': submission.status == 'rejected',
+        'is_approved_or_rejected': submission.status in ['approved', 'rejected'],
+        'is_submitted': submission.status == 'submitted'
+    }
+    
+    # Render the submission status template using Flask's Jinja2 engine
+    # This properly handles all conditionals and preserves HTML structure
+    rendered_content = render_template_string(SUBMISSION_STATUS_TEMPLATE, **template_vars)
+    
+    # Now use the rendered content in BASE_TEMPLATE (which uses Python .format())
+    return BASE_TEMPLATE.format(title=f"Submission {submission.id} - MLTF", theme=current_theme, user_menu=user_menu, content=rendered_content)
 
 LOGIN_TEMPLATE = """
 <div class="container mt-4">
