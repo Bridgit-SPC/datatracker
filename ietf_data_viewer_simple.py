@@ -64,7 +64,7 @@ def init_db():
 def migrate_hardcoded_users():
     """Migrate hardcoded users to database"""
     hardcoded_users = {
-        'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@ietf.org', 'role': 'admin', 'theme': 'dark'},
+        'admin': {'password': 'admin123', 'name': 'Admin User', 'email': 'admin@metalayer.org', 'role': 'admin', 'theme': 'dark'},
         'daveed': {'password': 'admin123', 'name': 'Daveed', 'email': 'daveed@bridgit.io', 'role': 'admin', 'theme': 'dark'},
         'john': {'password': 'password123', 'name': 'John Doe', 'email': 'john@example.com', 'role': 'editor', 'theme': 'dark'},
         'jane': {'password': 'password123', 'name': 'Jane Smith', 'email': 'jane@example.com', 'role': 'user', 'theme': 'dark'},
@@ -123,7 +123,7 @@ class PublishedDraft(db.Model):
     words = db.Column(db.Integer, default=0)
     date = db.Column(db.String(10))  # YYYY-MM-DD
     abstract = db.Column(db.Text)
-    stream = db.Column(db.String(20), default='ietf')
+    stream = db.Column(db.String(20), default='mltf')
     submission_id = db.Column(db.String(8), db.ForeignKey('submission.id'), nullable=True)
 
 
@@ -3645,7 +3645,7 @@ def draft_detail(draft_name):
     # If not found in DRAFTS, try to find as a submission ID
     submission = None
     if not draft:
-        from ietf_data_viewer_simple import Submission
+        # Submission is already imported at module level
         submission = Submission.query.filter_by(id=draft_name).first()
         if submission:
             # Create a draft-like object from the submission
@@ -3660,7 +3660,7 @@ def draft_detail(draft_name):
                 'rev': '00',  # Default revision for submissions
                 'pages': 1,   # Default pages for submissions
                 'words': 0,   # Default words for submissions
-                'stream': 'ietf'  # Default stream
+                'stream': 'mltf'  # Default stream
             }
 
     if not draft:
@@ -3735,10 +3735,10 @@ in the full document once published.
 This Internet-Draft is submitted in full conformance with the provisions
 of BCP 78 and BCP 79.
 
-Internet-Drafts are working documents of the Internet Engineering Task Force
-(IETF). Note that other groups may also distribute working documents as
-Internet-Drafts. The list of current Internet-Drafts is at
-https://datatracker.ietf.org/drafts/current/.
+Meta-Layer Drafts are working documents of the Meta-Layer Task Force
+(MLTF). These documents represent proposals and specifications for the
+Meta-Layer ecosystem. The list of current Meta-Layer Drafts is available
+in the MLTF datatracker.
 
 Internet-Drafts are draft documents valid for a maximum of six months and
 may be updated, replaced, or obsoleted by other documents at any time. It is
@@ -3750,7 +3750,7 @@ This Internet-Draft will expire on {draft.get('date', 'TBD')}.
 
 3. References
 
-[IETF] IETF Datatracker, https://datatracker.ietf.org/
+[MLTF] MLTF Datatracker, https://rfc.themetalayer.org/
 
 Authors' Addresses
 
@@ -3920,7 +3920,7 @@ def draft_comments(draft_name):
     # Get comments for this draft and build comment tree
     all_comments = build_comment_tree(draft_name)
 
-    # Always include sample comments (real IETF-style comments)
+    # Always include sample comments (real MLTF-style comments)
     sample_comments = [
         {
             'id': 'sample_1',
