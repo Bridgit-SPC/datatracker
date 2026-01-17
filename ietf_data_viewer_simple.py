@@ -6,6 +6,8 @@ This displays the Meta-Layer Task Force data so you can see it working.
 ⚠️ CRITICAL: THIS IS THE MLTF VERSION - DO NOT REVERT TO IETF ⚠️
 If you see "IETF Data Viewer" in the docstring, this file has been reverted incorrectly.
 The correct version should say "MLTF Data Viewer" and "Meta-Layer Task Force".
+
+Version: 2026-01-17-final (includes "Welcome to the Meta-Layer Governance Hub" and visible red test box)
 """
 
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session, send_file, jsonify
@@ -86,12 +88,34 @@ def migrate_hardcoded_users():
     db.session.commit()
     print(f"Migrated {len(hardcoded_users)} hardcoded users to database")
 
-app = Flask(__name__)
-app.secret_key = 'your-secret-key-here'  # For flash messages
+# Environment configuration
+ENV = os.environ.get('FLASK_ENV', 'production').lower()
+IS_PRODUCTION = ENV == 'production'
+IS_DEVELOPMENT = ENV == 'development'
+
+# Set up paths based on environment
+if IS_DEVELOPMENT:
+    INSTANCE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance_dev')
+    DB_NAME = 'datatracker_dev.db'
+    PORT = int(os.environ.get('FLASK_PORT', 8001))
+    DEBUG = True
+else:
+    INSTANCE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance')
+    DB_NAME = 'datatracker.db'
+    PORT = int(os.environ.get('FLASK_PORT', 8000))
+    DEBUG = False
+
+# Ensure instance directory exists
+os.makedirs(INSTANCE_DIR, exist_ok=True)
+
+app = Flask(__name__, instance_path=INSTANCE_DIR, instance_relative_config=True)
+app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-in-production')  # For flash messages
 
 # Database setup
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///datatracker.db'
+DB_PATH = os.path.join(INSTANCE_DIR, DB_NAME)
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DB_PATH}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['DEBUG'] = DEBUG
 db = SQLAlchemy(app)
 
 # Database Models
@@ -109,6 +133,7 @@ class Submission(db.Model):
     submitted_by = db.Column(db.String(100), default='Anonymous User')
     approved_at = db.Column(db.DateTime, nullable=True)
     rejected_at = db.Column(db.DateTime, nullable=True)
+    ml_number = db.Column(db.String(10), nullable=True)  # ML-0001, ML-0002, etc.
 
 class PublishedDraft(db.Model):
     """Store published/approved drafts separately from original test data"""
@@ -134,6 +159,9 @@ class Comment(db.Model):
     author = db.Column(db.String(100))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     parent_id = db.Column(db.Integer, db.ForeignKey('comment.id'), nullable=True)
+    edited_at = db.Column(db.DateTime, nullable=True)
+    is_deleted = db.Column(db.Boolean, default=False)
+    original_text = db.Column(db.Text, nullable=True)  # Store original text for edit history
 
     # Relationship for replies
     replies = db.relationship('Comment', backref=db.backref('parent', remote_side=[id]), lazy=True)
@@ -162,6 +190,26 @@ class User(db.Model):
     theme = db.Column(db.String(10), default='dark')  # light, dark, auto
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
+
+class UserFollow(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    draft_name = db.Column(db.String(100), nullable=False)
+    followed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    notification_level = db.Column(db.String(20), default='all')  # all, significant, major, comments, none
+
+    # Relationship
+    user = db.relationship('User', backref=db.backref('follows', lazy=True))
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'draft_name', name='unique_user_draft_follow'),)
+
+    NOTIFICATION_LEVELS = {
+        'all': 'All changes and comments',
+        'significant': 'Only significant changes (state changes, new revisions)',
+        'major': 'Only major changes (IESG actions, RFC publication)',
+        'comments': 'Only comments',
+        'none': 'No notifications (just tracking)'
+    }
 
 class WorkingGroupChair(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -192,6 +240,9 @@ UPLOAD_FOLDER = '/home/ubuntu/data-tracker/uploads'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'xml', 'doc', 'docx'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# Comment edit/delete time limit (in minutes)
+EDIT_DELETE_TIME_MINUTES = 15
 
 # Create upload directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -244,6 +295,7 @@ def get_current_user():
         user = User.query.filter_by(username=session['user']).first()
         if user:
             return {
+                'id': user.id,
                 'username': user.username,
                 'name': user.name,
                 'email': user.email,
@@ -318,6 +370,84 @@ def is_comment_liked(draft_name, comment_id, user):
     like_key = f"{draft_name}:{comment_id}"
     return user in COMMENT_LIKES.get(like_key, set())
 
+def is_user_following_draft(draft_name, user):
+    """Check if a user is following a specific draft"""
+    if not user:
+        return False
+    return UserFollow.query.filter_by(user_id=user['id'], draft_name=draft_name).first() is not None
+
+def get_user_follow(draft_name, user):
+    """Get the UserFollow object for a user and draft"""
+    if not user:
+        return None
+    return UserFollow.query.filter_by(user_id=user['id'], draft_name=draft_name).first()
+
+def get_notification_controls(draft_name, user):
+    """Generate HTML for notification level controls"""
+    if not user:
+        return ''
+
+    follow = get_user_follow(draft_name, user)
+    if not follow:
+        return ''
+
+    current_level = follow.notification_level
+    options = []
+    for level, description in UserFollow.NOTIFICATION_LEVELS.items():
+        selected = 'selected' if level == current_level else ''
+        options.append(f'<option value="{level}" {selected}>{description}</option>')
+
+    return f'''
+    <form method="post" action="/doc/draft/{draft_name}/update-notification/" class="mt-2">
+        <label class="form-label small">Notification Level:</label>
+        <select name="notification_level" class="form-select form-select-sm mb-1">
+            {''.join(options)}
+        </select>
+        <button type="submit" class="btn btn-outline-secondary btn-sm w-100">Update Notifications</button>
+    </form>
+    '''
+
+def should_notify_user(follow, event_type):
+    """
+    Determine if a user should be notified based on their notification level and event type.
+
+    Event types:
+    - 'comment': New comment added
+    - 'revision': New revision uploaded
+    - 'state_change': Document state changed
+    - 'major_change': Major events (IESG actions, RFC publication)
+    """
+    level = follow.notification_level
+
+    if level == 'none':
+        return False
+    elif level == 'comments':
+        return event_type == 'comment'
+    elif level == 'major':
+        return event_type in ['major_change']
+    elif level == 'significant':
+        return event_type in ['revision', 'state_change', 'major_change']
+    elif level == 'all':
+        return True
+
+    return False  # Default to no notification for unknown levels
+
+def get_users_to_notify(draft_name, event_type):
+    """
+    Get all users who should be notified for a specific event on a document.
+    Returns list of (user, follow) tuples.
+    """
+    follows = UserFollow.query.filter_by(draft_name=draft_name).all()
+    users_to_notify = []
+
+    for follow in follows:
+        if should_notify_user(follow, event_type):
+            user = User.query.get(follow.user_id)
+            if user:
+                users_to_notify.append((user, follow))
+
+    return users_to_notify
+
 def add_comment_reply(draft_name, parent_comment_id, reply_text, user):
     """Add a reply to a comment"""
     # Create reply in database
@@ -333,7 +463,7 @@ def add_comment_reply(draft_name, parent_comment_id, reply_text, user):
 
 def build_comment_tree(draft_name):
     """Build a tree structure of comments with nested replies"""
-    # Get all comments for this draft
+    # Get all comments for this draft (including deleted ones, but mark them)
     all_comments = Comment.query.filter_by(draft_name=draft_name).order_by(Comment.timestamp).all()
 
     # Create a dictionary for quick lookup
@@ -343,9 +473,13 @@ def build_comment_tree(draft_name):
             'id': str(comment.id),
             'author': comment.author,
             'date': comment.timestamp.strftime('%Y-%m-%d %H:%M'),
-            'comment': comment.text,
+            'comment': comment.text if not comment.is_deleted else '[Deleted]',
             'avatar': ''.join([word[0].upper() for word in comment.author.split()[:2]]),
-            'replies': []
+            'replies': [],
+            'timestamp': comment.timestamp,
+            'edited_at': comment.edited_at,
+            'is_deleted': comment.is_deleted,
+            'original_text': comment.original_text
         }
 
     # Build the tree
@@ -361,11 +495,28 @@ def build_comment_tree(draft_name):
 
     return top_level_comments
 
+def can_edit_delete_comment(comment, current_user):
+    """Check if current user can edit/delete this comment"""
+    if not current_user:
+        return False
+    if comment['author'] != current_user['name']:
+        return False
+    if comment.get('is_deleted', False):
+        return False
+    
+    # Check time limit
+    comment_time = comment.get('timestamp')
+    if comment_time:
+        time_diff = datetime.utcnow() - comment_time
+        time_limit = timedelta(minutes=EDIT_DELETE_TIME_MINUTES)
+        return time_diff <= time_limit
+    return False
+
 def render_comment_tree(comments, draft_name, level=0):
     """Recursively render comments and their nested replies"""
     if not comments:
         return ""
-
+    
     indent_class = f"ms-{level * 4}" if level > 0 else ""
     html = f'<div class="{indent_class} mt-2">' if level > 0 else '<div class="mt-2">'
 
@@ -373,6 +524,11 @@ def render_comment_tree(comments, draft_name, level=0):
         comment_id = comment.get('id', 'unknown')
         like_count = get_comment_likes(draft_name, comment_id)
         is_liked = is_comment_liked(draft_name, comment_id, get_current_user()['name']) if get_current_user() else False
+        current_user = get_current_user()
+        can_edit_delete = can_edit_delete_comment(comment, current_user)
+        is_deleted = comment.get('is_deleted', False)
+        edited_at = comment.get('edited_at')
+        edited_text = f" (edited {edited_at.strftime('%Y-%m-%d %H:%M')})" if edited_at else ""
 
         # Like button styling
         like_btn_class = "btn-outline-danger" if is_liked else "btn-outline-secondary"
@@ -383,6 +539,28 @@ def render_comment_tree(comments, draft_name, level=0):
         font_size = max(14 - level * 2, 12)    # Decrease font size for nested replies
         card_class = "mb-2" if level > 0 else "mb-3"
 
+        # Edit/Delete buttons HTML
+        edit_delete_buttons = ""
+        if can_edit_delete:
+            edit_click = f"editComment('{comment_id}')"
+            delete_click = f"deleteComment('{comment_id}')"
+            edit_delete_buttons = f"""
+                    <button class="btn btn-sm btn-outline-warning" onclick="{edit_click}" style="font-size: {font_size - 2}px;">
+                        Edit
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="{delete_click}" style="font-size: {font_size - 2}px;">
+                        Delete
+                    </button>
+            """
+
+        # Build onclick handlers outside f-string
+        like_click = f"toggleLike('{comment_id}')"
+        reply_click = f"toggleReply('{comment_id}')"
+        like_button = f'<button class="btn btn-sm {like_btn_class}" onclick="{like_click}" style="font-size: {font_size - 2}px;">{like_icon} {like_count}</button>' if not is_deleted else ''
+        reply_button = f'<button class="btn btn-sm btn-outline-primary" onclick="{reply_click}" style="font-size: {font_size - 2}px;">Reply</button>' if not is_deleted else ''
+        deleted_badge = '<small class="text-muted ms-2" style="font-style: italic;">[Deleted]</small>' if is_deleted else ''
+        deleted_style = 'opacity: 0.5; font-style: italic;' if is_deleted else ''
+
         html += f"""
         <div class="card {card_class}" id="comment-{comment_id}">
             <div class="card-body py-2">
@@ -392,17 +570,15 @@ def render_comment_tree(comments, draft_name, level=0):
                     </div>
                     <div>
                         <strong style="font-size: {font_size}px;">{comment['author']}</strong>
-                        <small class="text-muted ms-2">{comment['date']}</small>
+                        <small class="text-muted ms-2">{comment['date']}{edited_text}</small>
+                        {deleted_badge}
                     </div>
                 </div>
-                <p class="mb-2" style="font-size: {font_size}px;">{comment['comment']}</p>
+                <p class="mb-2" style="font-size: {font_size}px; {deleted_style}">{comment['comment']}</p>
                 <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm {like_btn_class}" onclick="toggleLike('{comment_id}')" style="font-size: {font_size - 2}px;">
-                        {like_icon} {like_count}
-                    </button>
-                    <button class="btn btn-sm btn-outline-primary" onclick="toggleReply('{comment_id}')" style="font-size: {font_size - 2}px;">
-                        Reply
-                    </button>
+                    {like_button}
+                    {reply_button}
+                    {edit_delete_buttons}
                 </div>
 
                 <!-- Reply form (hidden by default) -->
@@ -412,7 +588,7 @@ def render_comment_tree(comments, draft_name, level=0):
                         <input type="hidden" name="parent_comment_id" value="{comment_id}">
                         <input type="text" name="reply_text" class="form-control" placeholder="Write a reply..." required style="font-size: {font_size}px;">
                         <button type="submit" class="btn btn-primary btn-sm" style="font-size: {font_size - 2}px;">Reply</button>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleReply('{comment_id}')" style="font-size: {font_size - 2}px;">Cancel</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="{reply_click}" style="font-size: {font_size - 2}px;">Cancel</button>
                     </form>
                 </div>
 
@@ -429,31 +605,8 @@ def render_comment_tree(comments, draft_name, level=0):
 # Load MLTF data from test files
 def load_draft_data():
     """Load draft data from test files"""
+    # Return empty list - test documents removed per user request
     drafts = []
-    try:
-        with open('/home/ubuntu/datatracker/test/data/draft-aliases', 'r') as f:
-            for line in f:
-                if line.startswith('#') or not line.strip():
-                    continue
-                # Extract draft name from the line
-                match = re.search(r'xfilter-draft-([^:]+):', line)
-                if match:
-                    draft_name = match.group(1)
-                    # Create realistic MLTF draft information
-                    draft_title = draft_name.replace('-', ' ').title()
-                    drafts.append({
-                        'name': f'draft-{draft_name}',
-                        'title': f'{draft_title} - A Protocol for {draft_title.split()[-1].title()}',
-                        'rev': '00',
-                        'pages': 15 + (hash(draft_name) % 20),  # Random pages 15-35
-                        'words': 2000 + (hash(draft_name) % 3000),  # Random words 2000-5000
-                        'date': '2024-01-15',
-                        'status': 'Active',
-                        'authors': ['John Doe', 'Jane Smith', 'Alice Brown'],
-                        'group': f'{draft_name.split("-")[0].upper()} Working Group'
-                    })
-    except FileNotFoundError:
-        print("Draft aliases file not found")
     return drafts
 
 def load_group_data():
@@ -592,6 +745,8 @@ BASE_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
+    <link rel="icon" type="image/png" href="/static/images/overweb_logo.png">
+    <link rel="shortcut icon" type="image/png" href="/static/images/overweb_logo.png">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -681,10 +836,24 @@ BASE_TEMPLATE = """
             font-size: 18px;
             padding: 16px 20px;
             margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }}
 
         .navbar-brand:hover {{
             color: var(--accent-color) !important;
+        }}
+
+        .navbar-brand img {{
+            height: 24px;
+            width: auto;
+            object-fit: contain;
+        }}
+
+        /* White logo for dark mode */
+        [data-theme="dark"] .navbar-brand img {{
+            filter: brightness(0) invert(1);
         }}
 
         .navbar-nav {{
@@ -1055,7 +1224,7 @@ BASE_TEMPLATE = """
     <nav class="navbar navbar-expand-lg">
         <div class="container">
             <a class="navbar-brand" href="/">
-                <i class="fas fa-layer-group me-2"></i>
+                <img src="/static/images/overweb_logo.png" alt="Overweb" />
                 MLTF
             </a>
             <div class="navbar-nav">
@@ -1153,7 +1322,7 @@ SUBMIT_TEMPLATE = """
                 </div>
                 <div class="card-body">
                     <div id="flash-messages"></div>
-
+                    
                     <form method="POST" enctype="multipart/form-data">
                         <div class="mb-3">
                             <label for="title" class="form-label">Document Title *</label>
@@ -1222,7 +1391,7 @@ SUBMIT_TEMPLATE = """
                         <li>Maximum 16MB file size</li>
                         <li>Use standard MLTF formatting</li>
                     </ul>
-
+                    
                     <h6>Content Requirements:</h6>
                     <ul class="small">
                         <li>Clear, descriptive title</li>
@@ -1330,7 +1499,7 @@ SUBMISSION_STATUS_TEMPLATE = """
     <p class="lead">Track your Internet-Draft submission</p>
 
     <div id="flash-messages"></div>
-
+    
     <div class="row">
         <div class="col-md-8">
             <div class="card">
@@ -1474,7 +1643,7 @@ SUBMISSION_STATUS_TEMPLATE = """
                     <a href="/" class="btn btn-outline-secondary w-100">Back to Home</a>
                 </div>
             </div>
-
+            
             <div class="card mt-3">
                 <div class="card-header">
                     <h5>Need Help?</h5>
@@ -1740,7 +1909,7 @@ LOGIN_TEMPLATE = """
                 <div class="card-body">
                     <div id="flash-messages"></div>
                     
-                    <form method="POST">
+                    <form method="POST" action="/login/">
                         <div class="mb-3">
                             <label for="username" class="form-label">Username</label>
                             <input type="text" class="form-control" id="username" name="username" required>
@@ -1901,7 +2070,7 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-
+        
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password_hash, password):
             session['user'] = username
@@ -1938,7 +2107,7 @@ def register():
         password = request.form.get('password', '').strip()
         name = request.form.get('name', '').strip()
         email = request.form.get('email', '').strip()
-
+        
         # Check if username or email already exists
         existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
         if existing_user:
@@ -1986,7 +2155,7 @@ def profile():
         if action == 'update_password':
             old_password = request.form.get('old_password', '').strip()
             new_password = request.form.get('new_password', '').strip()
-
+            
             if check_password_hash(user.password_hash, old_password):
                 if len(new_password) >= 6:
                     user.password_hash = generate_password_hash(new_password)
@@ -1996,11 +2165,11 @@ def profile():
                     flash('New password must be at least 6 characters.', 'error')
             else:
                 flash('Current password is incorrect.', 'error')
-
+        
         elif action == 'update_profile':
             name = request.form.get('name', '').strip()
             email = request.form.get('email', '').strip()
-
+            
             # Check if email is already taken by another user
             existing_email = User.query.filter(User.email == email, User.username != session['user']).first()
             if existing_email:
@@ -2030,7 +2199,7 @@ def profile():
     light_selected = 'selected' if current_theme == 'light' else ''
     dark_selected = 'selected' if current_theme == 'dark' else ''
     auto_selected = 'selected' if current_theme == 'auto' else ''
-
+    
     profile_content = PROFILE_TEMPLATE.format(
         current_user_name=current_user['name'],
         current_user_email=current_user['email'],
@@ -2443,7 +2612,7 @@ def admin_users():
             </ul>
         </nav>
         ''' if users.pages > 1 else ''}
-    </div>
+        </div>
 
     <script>
         function changeRole(username, currentRole) {{
@@ -2837,6 +3006,26 @@ def update_submission_status(submission_id):
 
     return jsonify({'success': True, 'message': f'Status updated to {new_status}'})
 
+def get_next_ml_number():
+    """Get the next ML number (ML-001 to ML-999, then ML-1000+)"""
+    # Find the highest existing ML number
+    max_ml = db.session.query(db.func.max(Submission.ml_number)).filter(Submission.ml_number.isnot(None)).scalar()
+    if max_ml:
+        # Extract number from ML-XXXX or ML-XXX format
+        try:
+            current_num = int(max_ml.split('-')[1])
+            next_num = current_num + 1
+        except (ValueError, IndexError):
+            next_num = 1
+    else:
+        next_num = 1
+    
+    # Use 3 digits for 1-999, 4 digits for 1000+
+    if next_num < 1000:
+        return f"ML-{next_num:03d}"
+    else:
+        return f"ML-{next_num:04d}"
+
 @app.route('/submit/approve/<submission_id>', methods=['POST'])
 @require_role('admin')
 def approve_submission(submission_id):
@@ -2845,6 +3034,10 @@ def approve_submission(submission_id):
         flash('Submission not found', 'error')
         return redirect('/admin/submissions/')
 
+    # Assign ML number if not already assigned
+    if not submission.ml_number:
+        submission.ml_number = get_next_ml_number()
+    
     submission.status = 'approved'
     submission.approved_at = datetime.utcnow()
     db.session.commit()
@@ -2854,7 +3047,7 @@ def approve_submission(submission_id):
     add_to_document_history(f"submission-{submission.id}", "approved", admin_user['name'],
                            f"Approved submission: {submission.title}")
 
-    flash(f'Submission {submission.id} approved successfully!', 'success')
+    flash(f'Submission {submission.id} approved successfully! Assigned ML number: {submission.ml_number}', 'success')
     return redirect(f'/submit/status/{submission_id}/')
 
 @app.route('/submit/reject/<submission_id>', methods=['POST'])
@@ -2972,7 +3165,7 @@ def admin_analytics():
                     <div class="card-body">
                         <h4 class="text-info">{recent_users}</h4>
                         <p class="mb-0 small">New Users (30 days)</p>
-                    </div>
+        </div>
                 </div>
             </div>
             <div class="col-md-3">
@@ -3125,9 +3318,9 @@ def admin_analytics():
                 </div>
             </div>
         </div>
-    </div>
-    """
-
+        </div>
+        """
+    
     return BASE_TEMPLATE.format(
         title="Analytics - MLTF",
         theme=current_theme,
@@ -3371,14 +3564,29 @@ def home():
     current_theme = current_user.get('theme', 'dark') if current_user else 'light'
     user_menu = generate_user_menu()
     
+    # Count documents: DRAFTS + approved/published submissions
+    doc_count = len(DRAFTS) + Submission.query.filter(Submission.status.in_(['approved', 'published'])).count()
+    
     return BASE_TEMPLATE.format(title="MLTF", theme=current_theme, user_menu=user_menu, content=f"""
     
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
                 <h1>MLTF</h1>
-                <p class="lead">The day-to-day front-end to the MLTF database for people who work on Meta-Layer standards.</p>
-                
+                <div style="background-color: #ffcccc; border: 3px solid red; padding: 20px; margin: 20px 0; border-radius: 10px;">
+                    <h2 style="color: red; font-weight: bold;">🚨 DEPLOYMENT TEST SUCCESSFUL! 🚨</h2>
+                    <p style="color: red; font-size: 18px; font-weight: bold;">
+                        If you can see this red box, the deployment worked!
+                    </p>
+                    <p style="color: darkred;">
+                        Original text: "Welcome to the Meta-Layer Governance Hub"
+                    </p>
+                    <p style="color: darkred;">
+                        Version: 2026-01-17-final
+                    </p>
+                </div>
+                <p class="lead">Welcome to the Meta-Layer Governance Hub</p>
+
                 <div class="row">
                     <div class="col-md-6">
                         <div class="card">
@@ -3435,7 +3643,7 @@ def home():
                         <h5>Quick Stats</h5>
                     </div>
                     <div class="card-body">
-                        <p><strong>Documents:</strong> {len(DRAFTS)}</p>
+                        <p><strong>Documents:</strong> {doc_count}</p>
                         <p><strong>Working Groups:</strong> {len(GROUPS)}</p>
                         <p><strong>Last Updated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
                     </div>
@@ -3454,14 +3662,74 @@ def active_documents():
 def all_documents():
     user_menu = generate_user_menu()
     current_theme = session.get('theme', 'dark')
+    
+    # Get all documents: published drafts + approved/published submissions
+    all_docs = []
+    
+    # Add published drafts from DRAFTS list
+    all_docs.extend(DRAFTS)
+    
+    # Add approved/published submissions from database
+    approved_submissions = Submission.query.filter(Submission.status.in_(['approved', 'published'])).all()
+    for submission in approved_submissions:
+        # Calculate pages and words if needed
+        pages = 1
+        words = 0
+        if submission.file_path and os.path.exists(submission.file_path):
+            _, ext = os.path.splitext(submission.filename.lower())
+            try:
+                if ext in ['.txt', '.xml']:
+                    with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+                    words = len(content.split())
+                    pages = max(1, (words + 499) // 500)
+                elif ext == '.docx':
+                    from docx import Document
+                    doc = Document(submission.file_path)
+                    content_parts = []
+                    for paragraph in doc.paragraphs:
+                        if paragraph.text.strip():
+                            content_parts.append(paragraph.text)
+                    content = '\n\n'.join(content_parts)
+                    words = len(content.split())
+                    pages = max(1, (words + 499) // 500)
+                elif ext == '.pdf':
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(submission.file_path)
+                    content_parts = []
+                    for page in reader.pages:
+                        text = page.extract_text()
+                        if text.strip():
+                            content_parts.append(text)
+                    content = '\n\n'.join(content_parts)
+                    words = len(content.split())
+                    pages = len(reader.pages) if reader.pages else max(1, (words + 499) // 500)
+            except Exception:
+                pass
+        
+        all_docs.append({
+            'name': submission.id,
+            'title': submission.title,
+            'authors': submission.authors if isinstance(submission.authors, list) else [submission.authors] if submission.authors else [],
+            'group': submission.group or 'N/A',
+            'status': submission.status,
+            'rev': '00',
+            'pages': pages,
+            'words': words,
+            'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+            'abstract': submission.abstract or '',
+            'ml_number': submission.ml_number
+        })
+    
     docs_html = ""
-    for draft in DRAFTS:
+    for draft in all_docs:
+        display_id = draft.get('ml_number') or draft['name']
         docs_html += f"""
         <div class="col-md-6 document-card">
             <div class="card">
                 <div class="card-body">
                     <h5 class="card-title document-title">
-                        <a href="/doc/draft/{draft['name']}/">{draft['name']}</a>
+                        <a href="/doc/draft/{draft['name']}/">{display_id}</a>
                     </h5>
                     <p class="card-text">{draft['title']}</p>
                     <div class="document-meta">
@@ -3472,7 +3740,7 @@ def all_documents():
                     </div>
                     <div class="mt-2">
                         <small class="text-muted">
-                            Authors: {', '.join(draft['authors'])}<br>
+                            Authors: {', '.join(draft['authors']) if draft['authors'] else 'N/A'}<br>
                             Group: {draft['group']}<br>
                             Date: {draft['date']}
                         </small>
@@ -3486,12 +3754,12 @@ def all_documents():
             </div>
         </div>
         """
-
+    
     content = f"""
     <div class="container mt-4">
         <h1>All Documents</h1>
-        <p>Showing {len(DRAFTS)} documents</p>
-
+        <p>Showing {len(all_docs)} documents</p>
+        
         <div class="row">
             {docs_html}
         </div>
@@ -3499,6 +3767,127 @@ def all_documents():
     """
 
     return BASE_TEMPLATE.format(title="All Documents - MLTF", theme=current_theme, user_menu=user_menu, content=content)
+
+@app.route('/doc/draft/<path:draft_name>.txt')
+def draft_text(draft_name):
+    """Serve draft content as plain text"""
+    # First try to find in DRAFTS (published documents)
+    draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
+    
+    # If not found in DRAFTS, try to find as a submission ID
+    submission = None
+    if not draft:
+        submission = Submission.query.filter_by(id=draft_name).first()
+        if submission:
+            draft = {
+                'name': submission.id,
+                'title': submission.title,
+                'authors': submission.authors,
+                'abstract': submission.abstract or 'Abstract not available for this draft.',
+                'status': submission.status,
+                'group': submission.group,
+                'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+            }
+    
+    if not draft:
+        return "Document not found", 404
+    
+    # Load document content
+    document_content = "Document content not available."
+    
+    # Try to get content from submission file first
+    if submission and submission.file_path and os.path.exists(submission.file_path):
+        _, ext = os.path.splitext(submission.filename.lower())
+        try:
+            if ext in ['.txt', '.xml']:
+                with open(submission.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    document_content = f.read()
+            elif ext == '.docx':
+                from docx import Document
+                doc = Document(submission.file_path)
+                content_parts = []
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():
+                        content_parts.append(paragraph.text)
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                content_parts.append(cell.text)
+                document_content = '\n\n'.join(content_parts)
+            elif ext == '.pdf':
+                from PyPDF2 import PdfReader
+                reader = PdfReader(submission.file_path)
+                content_parts = []
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text.strip():
+                        content_parts.append(text)
+                document_content = '\n\n'.join(content_parts)
+                # Clean up PDF text
+                import re
+                document_content = re.sub(r'\n+', '\n', document_content)
+                document_content = re.sub(r' +', ' ', document_content)
+            else:
+                document_content = f"Document content cannot be displayed for {ext.upper()} files. Please download to view."
+        except Exception as e:
+            document_content = f"Error loading document content: {str(e)}"
+    
+    # If no submission content, try to get from DRAFTS data
+    elif draft and 'name' in draft:
+        # Generate text content from draft data
+        document_content = f"""INTERNET-DRAFT                                               {', '.join(draft.get('authors', []))}
+Intended status: Informational                            Meta-Layer Initiative
+Expires: {draft.get('date', 'TBD')}                                      {draft.get('date', 'TBD')}
+
+
+{draft.get('title', 'Document Title')}
+
+
+Abstract
+
+{draft.get('abstract', 'Abstract not available.')}
+
+
+1. Introduction
+
+This document describes {draft.get('title', 'the subject matter')}.
+
+The content of this draft is currently being developed and will be available
+in the full document once published.
+
+2. Status of This Memo
+
+This Internet-Draft is submitted in full conformance with the provisions
+of BCP 78 and BCP 79.
+
+Meta-Layer Drafts are working documents of the Meta-Layer Task Force
+(MLTF). These documents represent proposals and specifications for the
+Meta-Layer ecosystem. The list of current Meta-Layer Drafts is available
+in the MLTF datatracker.
+
+Internet-Drafts are draft documents valid for a maximum of six months and
+may be updated, replaced, or obsoleted by other documents at any time. It is
+inappropriate to use Internet-Drafts as reference material or to cite them
+other than as "work in progress."
+
+This Internet-Draft will expire on {draft.get('date', 'TBD')}.
+
+
+3. References
+
+[MLTF] MLTF Datatracker, https://rfc.themetalayer.org/
+
+Authors' Addresses
+
+{chr(10).join([f'{author} <email@example.com>' for author in draft.get('authors', [])])}
+
+Meta-Layer Initiative
+"""
+    
+    # Return as plain text
+    from flask import Response
+    return Response(document_content, mimetype='text/plain; charset=utf-8')
 
 @app.route('/doc/draft/<draft_name>/')
 def draft_detail(draft_name):
@@ -3523,12 +3912,13 @@ def draft_detail(draft_name):
                 'rev': '00',  # Default revision for submissions
                 'pages': 1,   # Default pages for submissions
                 'words': 0,   # Default words for submissions
-                'stream': 'mltf'  # Default stream
+                'stream': 'mltf',  # Default stream
+                'ml_number': submission.ml_number
             }
 
     if not draft:
         return "Document not found", 404
-
+    
     # Load full document content
     document_content = "Document content not available."
     calculated_pages = draft.get('pages', 1)
@@ -3643,9 +4033,11 @@ Meta-Layer Initiative
 
     user_menu = generate_user_menu()
     current_theme = session.get('theme', 'dark')
+    current_user = get_current_user()
+    display_id = draft.get('ml_number') or draft['name']
     content = f"""
     <div class="container mt-4">
-        <h1>{draft['name']}</h1>
+        <h1>{display_id}</h1>
         <p class="lead">{draft['title']}</p>
 
         <div class="row">
@@ -3656,7 +4048,7 @@ Meta-Layer Initiative
                     </div>
                     <div class="card-body">
                         <table class="table" style="color: var(--text-primary) !important;">
-                            <tr><td style="color: var(--text-secondary) !important;"><strong>Draft ID:</strong></td><td style="color: var(--text-primary) !important;">{draft['name']}</td></tr>
+                            <tr><td style="color: var(--text-secondary) !important;"><strong>ID:</strong></td><td style="color: var(--text-primary) !important;">{display_id}</td></tr>
                             <tr><td style="color: var(--text-secondary) !important;"><strong>Title:</strong></td><td style="color: var(--text-primary) !important;">{draft['title']}</td></tr>
                             <tr><td style="color: var(--text-secondary) !important;"><strong>Revision:</strong></td><td style="color: var(--text-primary) !important;">{draft['rev']}</td></tr>
                             <tr><td style="color: var(--text-secondary) !important;"><strong>Status:</strong></td><td style="color: var(--text-primary) !important;"><span class="badge bg-secondary">{draft['status']}</span></td></tr>
@@ -3668,7 +4060,7 @@ Meta-Layer Initiative
                         </table>
                     </div>
                 </div>
-
+                
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Abstract</h5>
@@ -3698,7 +4090,7 @@ Meta-Layer Initiative
                     </div>
                 </div>
             </div>
-
+            
             <div class="col-md-4">
                 <div class="card">
                     <div class="card-header">
@@ -3708,10 +4100,14 @@ Meta-Layer Initiative
                         <a href="/doc/draft/{draft['name']}/comments/" class="btn btn-primary w-100 mb-2">View Comments ({Comment.query.filter_by(draft_name=draft_name).count()})</a>
                         <a href="/doc/draft/{draft['name']}/history/" class="btn btn-secondary w-100 mb-2">View History</a>
                         <a href="/doc/draft/{draft['name']}/revisions/" class="btn btn-info w-100 mb-2">View Revisions</a>
-                        <a href="/download/{draft['name']}" class="btn btn-outline-primary w-100">Download Document</a>
+                        <a href="/download/{draft['name']}" class="btn btn-outline-primary w-100 mb-2">Download Document</a>
+                        {'<form method="post" action="/doc/draft/' + draft['name'] + '/follow/" style="display: inline;" class="mb-2"><select name="notification_level" class="form-select form-select-sm mb-1"><option value="all">All changes & comments</option><option value="significant">Significant changes only</option><option value="major">Major changes only</option><option value="comments">Comments only</option><option value="none">No notifications</option></select><button type="submit" class="btn btn-success w-100"><i class="fas fa-bell me-1"></i>Follow Document</button></form>' if current_user and not is_user_following_draft(draft_name, current_user) else ''}
+                        {'<form method="post" action="/doc/draft/' + draft['name'] + '/unfollow/" style="display: inline;" class="mb-2"><button type="submit" class="btn btn-warning w-100"><i class="fas fa-bell-slash me-1"></i>Unfollow Document</button></form>' if current_user and is_user_following_draft(draft_name, current_user) else ''}
+                        {get_notification_controls(draft_name, current_user) if current_user and is_user_following_draft(draft_name, current_user) else ''}
+                        {'' if not current_user else ''}
                     </div>
                 </div>
-
+                
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Quick Comment</h5>
@@ -3720,25 +4116,25 @@ Meta-Layer Initiative
                         <form method="POST" action="/doc/draft/{draft['name']}/comments/">
                             <div class="mb-3">
                                 <textarea class="form-control" name="comment" rows="3" placeholder="Add a quick comment..." required></textarea>
-                            </div>
+                    </div>
                             <button type="submit" class="btn btn-success btn-sm w-100">Post Comment</button>
                         </form>
-                    </div>
-                </div>
-
+        </div>
+    </div>
+    
                 <div class="card mt-3">
                     <div class="card-header">
                         <h5>Related Documents</h5>
                     </div>
-                    <div class="card-body">
+                <div class="card-body">
                         <p>Related documents would appear here in the real datatracker.</p>
+                    </div>
                     </div>
                 </div>
             </div>
         </div>
-    </div>
-    """
-
+        """
+    
     # Add document_content to the template
     content = content.replace('{document_content}', document_content)
 
@@ -3751,6 +4147,7 @@ def draft_comments(draft_name):
     draft = next((d for d in DRAFTS if d['name'] == draft_name), None)
     
     # If not found in DRAFTS, try to find as a submission ID
+    submission = None
     if not draft:
         submission = Submission.query.filter_by(id=draft_name).first()
         if submission:
@@ -3761,10 +4158,14 @@ def draft_comments(draft_name):
                 'status': submission.status,
                 'group': submission.group,
                 'date': submission.submitted_at.strftime('%Y-%m-%d') if submission.submitted_at else '',
+                'ml_number': submission.ml_number
             }
     
     if not draft:
         return "Document not found", 404
+    
+    # Get display ID (ML number if available, otherwise draft name)
+    display_id = draft.get('ml_number') or draft_name
 
     user_menu = generate_user_menu()
     current_theme = session.get('theme', get_current_user().get('theme', 'dark') if get_current_user() else 'dark')
@@ -3773,7 +4174,7 @@ def draft_comments(draft_name):
     # Handle new comment submission
     if request.method == 'POST':
         action = request.form.get('action', 'comment')
-
+        
         if action == 'comment':
             comment_text = request.form.get('comment', '').strip()
             if comment_text:
@@ -3785,15 +4186,15 @@ def draft_comments(draft_name):
                 )
                 db.session.add(new_comment)
                 db.session.commit()
-
+                
                 # Add to document history
                 add_to_document_history(draft_name, 'Comment added', current_user['name'], f'Added comment: {comment_text[:50]}...')
-
+                
                 flash('Comment added successfully!', 'success')
                 return redirect(f'/doc/draft/{draft_name}/comments/')
             else:
                 flash('Please enter a comment.', 'error')
-
+        
         elif action == 'like':
             comment_id = request.form.get('comment_id')
             if comment_id:
@@ -3803,7 +4204,7 @@ def draft_comments(draft_name):
                 return redirect(f'/doc/draft/{draft_name}/comments/')
             else:
                 flash('Invalid comment ID.', 'error')
-
+        
         elif action == 'reply':
             parent_comment_id = request.form.get('parent_comment_id')
             reply_text = request.form.get('reply_text', '').strip()
@@ -3813,40 +4214,55 @@ def draft_comments(draft_name):
                 return redirect(f'/doc/draft/{draft_name}/comments/')
             else:
                 flash('Please enter a reply.', 'error')
+    
+        elif action == 'edit':
+            comment_id = request.form.get('comment_id')
+            new_text = request.form.get('new_text', '').strip()
+            if comment_id and new_text:
+                comment = Comment.query.filter_by(id=int(comment_id)).first()
+                if comment and comment.author == current_user['name']:
+                    # Check time limit
+                    time_diff = datetime.utcnow() - comment.timestamp
+                    time_limit = timedelta(minutes=EDIT_DELETE_TIME_MINUTES)
+                    if time_diff <= time_limit and not comment.is_deleted:
+                        # Store original text if first edit
+                        if not comment.original_text:
+                            comment.original_text = comment.text
+                        comment.text = new_text
+                        comment.edited_at = datetime.utcnow()
+                        db.session.commit()
+                        flash('Comment updated successfully!', 'success')
+                    else:
+                        flash('Edit time limit has expired.', 'error')
+                else:
+                    flash('You can only edit your own comments.', 'error')
+                return redirect(f'/doc/draft/{draft_name}/comments/')
+            else:
+                flash('Invalid comment or empty text.', 'error')
+        
+        elif action == 'delete':
+            comment_id = request.form.get('comment_id')
+            if comment_id:
+                comment = Comment.query.filter_by(id=int(comment_id)).first()
+                if comment and comment.author == current_user['name']:
+                    # Check time limit
+                    time_diff = datetime.utcnow() - comment.timestamp
+                    time_limit = timedelta(minutes=EDIT_DELETE_TIME_MINUTES)
+                    if time_diff <= time_limit and not comment.is_deleted:
+                        comment.is_deleted = True
+                        comment.text = '[Deleted]'
+                        db.session.commit()
+                        flash('Comment deleted successfully!', 'success')
+                    else:
+                        flash('Delete time limit has expired.', 'error')
+                else:
+                    flash('You can only delete your own comments.', 'error')
+                return redirect(f'/doc/draft/{draft_name}/comments/')
+            else:
+                flash('Invalid comment ID.', 'error')
 
     # Get comments for this draft and build comment tree
     all_comments = build_comment_tree(draft_name)
-
-    # Always include sample comments (real MLTF-style comments)
-    sample_comments = [
-        {
-            'id': 'sample_1',
-            'author': 'John Smith',
-            'date': '2024-01-15 14:30',
-            'comment': 'This is a great draft! I think the approach is solid and the implementation details are well thought out.',
-            'avatar': 'JS',
-            'replies': []
-        },
-        {
-            'id': 'sample_2',
-            'author': 'Alice Johnson',
-            'date': '2024-01-16 09:15',
-            'comment': 'I have some concerns about the security implications mentioned in section 3.2. Could we discuss this further?',
-            'avatar': 'AJ',
-            'replies': []
-        },
-        {
-            'id': 'sample_3',
-            'author': 'Bob Wilson',
-            'date': '2024-01-16 16:45',
-            'comment': 'The performance metrics look promising. Have you considered the impact on legacy systems?',
-            'avatar': 'BW',
-            'replies': []
-        }
-    ]
-
-    # Combine sample comments with user comments
-    all_comments = sample_comments + all_comments
 
     # Render the comment tree with nested replies
     comments_html = render_comment_tree(all_comments, draft_name)
@@ -3857,12 +4273,12 @@ def draft_comments(draft_name):
             <ol class="breadcrumb">
                 <li class="breadcrumb-item"><a href="/">Home</a></li>
                 <li class="breadcrumb-item"><a href="/doc/all/">Documents</a></li>
-                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{draft_name}</a></li>
+                <li class="breadcrumb-item"><a href="/doc/draft/{draft_name}/">{display_id}</a></li>
                 <li class="breadcrumb-item active">Comments</li>
             </ol>
         </nav>
-
-        <h1>Comments for {draft_name}</h1>
+        
+        <h1>Comments for {display_id}</h1>
         <p class="lead">{draft['title']}</p>
 
         <div class="mb-4">
@@ -3872,13 +4288,13 @@ def draft_comments(draft_name):
             <a href="/doc/draft/{draft_name}/history/" class="btn btn-outline-secondary me-2">History</a>
             <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
         </div>
-
+        
         <div class="row">
             <div class="col-md-8">
                 <h3>Comments ({len(all_comments)})</h3>
                 <div id="flash-messages"></div>
                 {comments_html}
-
+                
                 <div class="card mt-4">
                     <div class="card-header">
                         <h5>Add a Comment</h5>
@@ -3894,7 +4310,7 @@ def draft_comments(draft_name):
                     </div>
                 </div>
             </div>
-
+            
             <div class="col-md-4">
                 <div class="card">
                     <div class="card-header">
@@ -3910,7 +4326,7 @@ def draft_comments(draft_name):
             </div>
         </div>
     </div>
-
+    
     <script>
         function toggleLike(commentId) {{
             // Create a form to submit the like action
@@ -3933,21 +4349,109 @@ def draft_comments(draft_name):
             document.body.appendChild(form);
             form.submit();
         }}
-
+        
         function toggleReply(commentId) {{
             // Find the reply form for this comment
             const replyForm = document.getElementById('reply-form-' + commentId);
             if (replyForm) {{
                 // Toggle visibility
                 if (replyForm.style.display === 'none' || replyForm.style.display === '') {{
-                    replyForm.style.display = 'block';
-                }} else {{
-                    replyForm.style.display = 'none';
-                }}
+                replyForm.style.display = 'block';
+            }} else {{
+                replyForm.style.display = 'none';
+            }}
             }}
         }}
+
+        function editComment(commentId) {{
+            const commentCard = document.getElementById('comment-' + commentId);
+            if (!commentCard) return;
+            
+            // Find the comment text element
+            const commentText = commentCard.querySelector('p.mb-2');
+            if (!commentText) return;
+            
+            const currentText = commentText.textContent.trim();
+            
+            // Create edit form
+            const editForm = document.createElement('form');
+            editForm.method = 'POST';
+            editForm.style.marginTop = '10px';
+            
+            const textarea = document.createElement('textarea');
+            textarea.className = 'form-control';
+            textarea.name = 'new_text';
+            textarea.rows = 3;
+            textarea.value = currentText;
+            textarea.required = true;
+            
+            const actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'action';
+            actionInput.value = 'edit';
+            
+            const commentIdInput = document.createElement('input');
+            commentIdInput.type = 'hidden';
+            commentIdInput.name = 'comment_id';
+            commentIdInput.value = commentId;
+            
+            const buttonDiv = document.createElement('div');
+            buttonDiv.className = 'd-flex gap-2 mt-2';
+            
+            const saveBtn = document.createElement('button');
+            saveBtn.type = 'submit';
+            saveBtn.className = 'btn btn-sm btn-primary';
+            saveBtn.textContent = 'Save';
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-sm btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = function() {{
+                commentText.style.display = 'block';
+                editForm.remove();
+            }};
+            
+            buttonDiv.appendChild(saveBtn);
+            buttonDiv.appendChild(cancelBtn);
+            
+            editForm.appendChild(actionInput);
+            editForm.appendChild(commentIdInput);
+            editForm.appendChild(textarea);
+            editForm.appendChild(buttonDiv);
+            
+            // Hide original text and show edit form
+            commentText.style.display = 'none';
+            commentText.parentNode.insertBefore(editForm, commentText.nextSibling);
+        }}
+
+        function deleteComment(commentId) {{
+            if (!confirm('Are you sure you want to delete this comment? This action cannot be undone.')) {{
+                return;
+            }}
+            
+            // Create a form to submit the delete action
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.style.display = 'none';
+            
+            const actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'action';
+            actionInput.value = 'delete';
+            
+            const commentIdInput = document.createElement('input');
+            commentIdInput.type = 'hidden';
+            commentIdInput.name = 'comment_id';
+            commentIdInput.value = commentId;
+            
+            form.appendChild(actionInput);
+            form.appendChild(commentIdInput);
+            document.body.appendChild(form);
+            form.submit();
+        }}
     </script>
-    """
+"""
 
     return BASE_TEMPLATE.format(title=f"Comments - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
 
@@ -3971,27 +4475,27 @@ def draft_history(draft_name):
     
     if not draft:
         return "Document not found", 404
-
+    
     user_menu = generate_user_menu()
     current_theme = session.get('theme', 'dark')
 
     # Get history for this draft
     history = DocumentHistory.query.filter_by(draft_name=draft_name).order_by(DocumentHistory.timestamp.desc()).all()
-
+    
     history_html = ""
     if history:
         for entry in history:
             history_html += f"""
             <div class="card mb-3">
-                <div class="card-body">
+                        <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start mb-2">
                         <span class="badge bg-primary">{entry.action}</span>
                         <small class="text-muted">{entry.timestamp.strftime('%Y-%m-%d %H:%M')}</small>
-                    </div>
+                            </div>
                     <p class="mb-1"><strong>User:</strong> {entry.user}</p>
                     <p class="mb-0">{entry.details}</p>
-                </div>
-            </div>
+                        </div>
+                    </div>
             """
     else:
         history_html = """
@@ -4000,7 +4504,7 @@ def draft_history(draft_name):
             No history available for this draft.
         </div>
         """
-
+    
     content = f"""
     <div class="container mt-4">
         <nav aria-label="breadcrumb">
@@ -4011,10 +4515,10 @@ def draft_history(draft_name):
                 <li class="breadcrumb-item active">History</li>
             </ol>
         </nav>
-
+        
         <h1>History for {draft_name}</h1>
         <p class="lead">{draft['title']}</p>
-
+        
         <div class="mb-4">
             <a href="/doc/draft/{draft_name}/" class="btn btn-secondary me-2">
                 <i class="fas fa-arrow-left me-1"></i>Back to Draft
@@ -4023,11 +4527,77 @@ def draft_history(draft_name):
             <a href="/doc/draft/{draft_name}/revisions/" class="btn btn-outline-secondary">Revisions</a>
         </div>
 
-        {history_html}
-    </div>
+                {history_html}
+            </div>
     """
 
     return BASE_TEMPLATE.format(title=f"History - {draft_name}", theme=current_theme, user_menu=user_menu, content=content)
+
+@app.route('/doc/draft/<draft_name>/follow/', methods=['POST'])
+def follow_draft(draft_name):
+    current_user = get_current_user()
+    if not current_user:
+        flash('You must be logged in to follow documents.', 'error')
+        return redirect(url_for('draft_detail', draft_name=draft_name))
+
+    # Check if already following
+    existing_follow = UserFollow.query.filter_by(user_id=current_user['id'], draft_name=draft_name).first()
+    if existing_follow:
+        flash('You are already following this document.', 'info')
+    else:
+        # Get notification level from form, default to 'all'
+        notification_level = request.form.get('notification_level', 'all')
+        follow = UserFollow(
+            user_id=current_user['id'],
+            draft_name=draft_name,
+            notification_level=notification_level
+        )
+        db.session.add(follow)
+        db.session.commit()
+        level_desc = UserFollow.NOTIFICATION_LEVELS.get(notification_level, 'All changes and comments')
+        flash(f'You are now following this document with {level_desc.lower()} notifications.', 'success')
+
+    return redirect(url_for('draft_detail', draft_name=draft_name))
+
+@app.route('/doc/draft/<draft_name>/unfollow/', methods=['POST'])
+def unfollow_draft(draft_name):
+    current_user = get_current_user()
+    if not current_user:
+        flash('You must be logged in to unfollow documents.', 'error')
+        return redirect(url_for('draft_detail', draft_name=draft_name))
+
+    follow = UserFollow.query.filter_by(user_id=current_user['id'], draft_name=draft_name).first()
+    if follow:
+        db.session.delete(follow)
+        db.session.commit()
+        flash('You have stopped following this document.', 'success')
+    else:
+        flash('You were not following this document.', 'info')
+
+    return redirect(url_for('draft_detail', draft_name=draft_name))
+
+@app.route('/doc/draft/<draft_name>/update-notification/', methods=['POST'])
+def update_notification_level(draft_name):
+    current_user = get_current_user()
+    if not current_user:
+        flash('You must be logged in to update notification settings.', 'error')
+        return redirect(url_for('draft_detail', draft_name=draft_name))
+
+    follow = UserFollow.query.filter_by(user_id=current_user['id'], draft_name=draft_name).first()
+    if not follow:
+        flash('You are not following this document.', 'error')
+        return redirect(url_for('draft_detail', draft_name=draft_name))
+
+    notification_level = request.form.get('notification_level', 'all')
+    if notification_level in UserFollow.NOTIFICATION_LEVELS:
+        follow.notification_level = notification_level
+        db.session.commit()
+        level_desc = UserFollow.NOTIFICATION_LEVELS[notification_level]
+        flash(f'Notification level updated to: {level_desc}', 'success')
+    else:
+        flash('Invalid notification level.', 'error')
+
+    return redirect(url_for('draft_detail', draft_name=draft_name))
 
 @app.route('/doc/draft/<draft_name>/revisions/')
 def draft_revisions(draft_name):
@@ -4117,22 +4687,22 @@ def draft_revisions(draft_name):
     # For now, show a simple revision history
     # In a real system, this would show actual revision differences
     revisions_html = f"""
-    <div class="card">
-        <div class="card-header">
+                <div class="card">
+                    <div class="card-header">
             <h5>Current Revision: {draft['rev']}</h5>
-        </div>
-        <div class="card-body">
+                    </div>
+                    <div class="card-body">
             <p>This draft is currently at revision {draft['rev']}.</p>
             <p><strong>Published:</strong> {draft['date']}</p>
             <p><strong>Pages:</strong> {draft['pages']}</p>
             <p><strong>Words:</strong> {draft['words']}</p>
-        </div>
-    </div>
+                    </div>
+                </div>
 
     <div class="alert alert-info mt-3">
         <i class="fas fa-info-circle me-2"></i>
         Detailed revision history and diff viewing would be implemented in a full datatracker system.
-    </div>
+            </div>
     """
 
     content = f"""
@@ -4319,7 +4889,7 @@ def group_detail(acronym):
                 <input type="text" id="new-chair-input-{full_acronym}" class="form-control" placeholder="Add new chair name">
                 <button type="button" class="btn btn-success" onclick="addChair('{full_acronym}')">Add Chair</button>
                 <button type="button" class="btn btn-warning" onclick="updateChairs('{full_acronym}')">Update Chairs</button>
-            </div>
+        </div>
             <div class="mt-2">
                 <small class="text-muted">Current approved chairs: {", ".join(selected_chairs) if selected_chairs else "None"}</small>
             </div>
@@ -4333,14 +4903,14 @@ def group_detail(acronym):
     <div class="container mt-4">
         <div class="row">
             <div class="col-12">
-                <nav aria-label="breadcrumb">
-                    <ol class="breadcrumb">
-                        <li class="breadcrumb-item"><a href="/">Home</a></li>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
                         <li class="breadcrumb-item"><a href="/group/">Working Groups</a></li>
                         <li class="breadcrumb-item active">{group['name']}</li>
-                    </ol>
-                </nav>
-
+            </ol>
+        </nav>
+        
                 <div class="card mb-4">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start">
@@ -4355,24 +4925,24 @@ def group_detail(acronym):
                         </div>
                     </div>
                 </div>
-
-                <div class="row">
-                    <div class="col-md-8">
+        
+        <div class="row">
+            <div class="col-md-8">
                         <div class="card mb-4">
                             <div class="card-header">
                                 <h5 class="mb-0">About</h5>
-                            </div>
+                </div>
                             <div class="card-body">
                                 <p>{group['description']}</p>
-                            </div>
+            </div>
                         </div>
                     </div>
-                    <div class="col-md-4">
+            <div class="col-md-4">
                         <div class="card mb-4">
-                            <div class="card-header">
+                    <div class="card-header">
                                 <h5 class="mb-0">Leadership</h5>
-                            </div>
-                            <div class="card-body">
+                    </div>
+                    <div class="card-body">
                                 <p><strong>Chair:</strong> {chair_name}</p>
                                 {'<span class="badge bg-warning">Pending Approval</span>' if not chair_approved and chair_name != "TBD" else ''}
                             </div>
@@ -4384,7 +4954,7 @@ def group_detail(acronym):
             </div>
         </div>
     </div>
-
+    
     <script>
     function joinGroup(acronym) {{
         fetch(`/group/${{acronym}}/join`, {{
@@ -4652,12 +5222,12 @@ def people():
                     <p class="lead text-muted mb-4">Coming Soon</p>
                     <p class="mb-4">We're building a comprehensive directory of MLTF participants and contributors. This feature will help you connect with other members of the community.</p>
                     <a href="/" class="btn btn-primary">Return to Home</a>
-                </div>
+        </div>
             </div>
         </div>
-    </div>
-    """
-
+        </div>
+        """
+    
     return BASE_TEMPLATE.format(
         title="People Directory - MLTF",
         theme=session.get('theme', 'dark'),
@@ -4694,6 +5264,169 @@ def meetings():
         user_menu=user_menu
     )
 
+# Deployment API endpoint (development only)
+@app.route('/_deploy/reload', methods=['POST'])
+def reload_app():
+    """Reload the application - development only"""
+    if not IS_DEVELOPMENT:
+        return jsonify({'error': 'Not available in production'}), 403
+    
+    # Clear Python cache
+    import shutil
+    cache_dirs = []
+    for root, dirs, files in os.walk(os.path.dirname(os.path.abspath(__file__))):
+        if '__pycache__' in dirs:
+            cache_dirs.append(os.path.join(root, '__pycache__'))
+        for file in files:
+            if file.endswith('.pyc'):
+                try:
+                    os.remove(os.path.join(root, file))
+                except:
+                    pass
+    
+    for cache_dir in cache_dirs:
+        try:
+            shutil.rmtree(cache_dir)
+        except:
+            pass
+    
+    # Touch the file to trigger reload if using file watcher
+    # For systemd, we'll return a signal to restart
+    return jsonify({
+        'status': 'success',
+        'message': 'Cache cleared. Service restart required.',
+        'restart_command': 'systemctl --user restart datatracker-dev.service'
+    })
+
+@app.route('/_deploy/status', methods=['GET'])
+def deployment_status():
+    """Check deployment status - comprehensive status endpoint"""
+    import subprocess
+    from datetime import datetime
+    
+    # Get git info
+    git_branch = 'unknown'
+    git_commit = 'unknown'
+    git_commit_short = 'unknown'
+    try:
+        result = subprocess.run(['git', 'branch', '--show-current'], 
+                               capture_output=True, text=True, timeout=2, cwd=os.path.dirname(os.path.abspath(__file__)))
+        if result.returncode == 0:
+            git_branch = result.stdout.strip() or 'unknown'
+    except:
+        pass
+    
+    try:
+        result = subprocess.run(['git', 'rev-parse', 'HEAD'], 
+                               capture_output=True, text=True, timeout=2, cwd=os.path.dirname(os.path.abspath(__file__)))
+        if result.returncode == 0:
+            git_commit = result.stdout.strip() or 'unknown'
+            git_commit_short = git_commit[:8] if len(git_commit) > 8 else git_commit
+    except:
+        pass
+    
+    # Check service status
+    service_name = f'datatracker{"-dev" if IS_DEVELOPMENT else ""}.service'
+    service_active = None
+    try:
+        result = subprocess.run(['systemctl', '--user', 'is-active', service_name],
+                               capture_output=True, text=True, timeout=2)
+        service_active = result.returncode == 0
+    except:
+        pass
+    
+    # Check database
+    db_exists = os.path.exists(DB_PATH)
+    db_size = 0
+    if db_exists:
+        try:
+            db_size = os.path.getsize(DB_PATH)
+        except:
+            pass
+    
+    status = {
+        'environment': ENV,
+        'port': PORT,
+        'database': {
+            'path': DB_PATH,
+            'exists': db_exists,
+            'size_bytes': db_size,
+            'size_mb': round(db_size / 1024 / 1024, 2) if db_size > 0 else 0
+        },
+        'git': {
+            'branch': git_branch,
+            'commit': git_commit,
+            'commit_short': git_commit_short
+        },
+        'service': {
+            'name': service_name,
+            'active': service_active
+        },
+        'deployed_at': datetime.now().isoformat(),
+        'version': '2026-01-17-v2'
+    }
+
+    return jsonify(status)
+
+@app.route('/_deploy/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    import subprocess
+    
+    # Check database connection
+    db_healthy = False
+    try:
+        db.session.execute(db.text('SELECT 1'))
+        db_healthy = True
+    except:
+        pass
+    
+    # Check service status
+    service_name = f'datatracker{"-dev" if IS_DEVELOPMENT else ""}.service'
+    service_healthy = None
+    try:
+        result = subprocess.run(['systemctl', '--user', 'is-active', service_name],
+                               capture_output=True, text=True, timeout=2)
+        service_healthy = result.returncode == 0
+    except:
+        pass
+    
+    overall_healthy = db_healthy and (service_healthy is True)
+    
+    return jsonify({
+        'status': 'healthy' if overall_healthy else 'unhealthy',
+        'database': 'connected' if db_healthy else 'disconnected',
+        'service': 'active' if service_healthy else 'inactive',
+        'timestamp': datetime.now().isoformat()
+    }), 200 if overall_healthy else 503
+
+@app.route('/_deploy/test', methods=['GET'])
+def deployment_test():
+    """Show a visible test page"""
+    return f"""
+    <html>
+    <head><title>Deployment Test</title></head>
+    <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <h1 style="color: red;">🚨 DEPLOYMENT TEST PAGE 🚨</h1>
+        <div style="background-color: #ffcccc; border: 3px solid red; padding: 20px; margin: 20px 0; border-radius: 10px;">
+            <h2 style="color: red;">If you can see this page, the deployment worked!</h2>
+            <p><strong>Environment:</strong> {ENV}</p>
+            <p><strong>Port:</strong> {PORT}</p>
+            <p><strong>Database:</strong> {DB_PATH}</p>
+            <p><strong>Time:</strong> {__import__('datetime').datetime.now()}</p>
+        </div>
+        <p><a href="/">← Back to main site</a></p>
+    </body>
+    </html>
+    """
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # Initialize database on startup
+    init_db()
+    print(f"Starting MLTF Datatracker in {ENV} mode on port {PORT}")
+    print(f"Database: {DB_PATH}")
+    # Disable reloader when running under systemd (detected by systemd environment)
+    # The reloader can cause hanging in systemd services
+    use_reloader = DEBUG and not os.environ.get('INVOCATION_ID')  # systemd sets INVOCATION_ID
+    app.run(host='0.0.0.0', port=PORT, debug=DEBUG, use_reloader=use_reloader)
 
