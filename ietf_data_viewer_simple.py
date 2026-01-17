@@ -105,6 +105,18 @@ else:
     PORT = int(os.environ.get('FLASK_PORT', 8000))
     DEBUG = False
 
+# DEPLOYMENT SAFETY - Block data modifications during deployment
+DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'false').lower() == 'true'
+if DEPLOYMENT_MODE:
+    print("🚨 DEPLOYMENT MODE ENABLED - Data modifications blocked")
+
+def check_deployment_safety(operation="database operation"):
+    """Check if operations are allowed during deployment"""
+    if DEPLOYMENT_MODE:
+        error_msg = f"🚨 BLOCKED: {operation} not allowed during deployment"
+        print(error_msg)
+        raise RuntimeError(error_msg)
+
 # Ensure instance directory exists
 os.makedirs(INSTANCE_DIR, exist_ok=True)
 
@@ -1413,6 +1425,20 @@ SUBMIT_TEMPLATE = """
     </div>
 </div>
 """
+
+@app.before_request
+def deployment_safety_check():
+    """Block data modifications during deployment"""
+    if DEPLOYMENT_MODE and request.method in ['POST', 'PUT', 'DELETE', 'PATCH']:
+        # Allow deployment endpoints and static files
+        if (request.path.startswith('/_deploy/') or
+            request.path.startswith('/static/') or
+            request.path in ['/login/', '/logout/']):
+            return
+        # Block all other data modifications
+        print(f"🚨 BLOCKED {request.method} {request.path} - Deployment mode active")
+        from flask import jsonify
+        return jsonify({'error': 'Data modifications disabled during deployment'}), 403
 
 @app.route('/submit/', methods=['GET', 'POST'])
 @require_auth
@@ -3572,7 +3598,7 @@ def home():
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force</p>
+                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force!</p>
 
                 <div class="row">
                     <div class="col-md-6">
