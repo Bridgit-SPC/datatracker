@@ -3585,7 +3585,7 @@ def home():
                         Version: 2026-01-17-final
                     </p>
                 </div>
-                <p class="lead">Welcome to the Meta-Layer Governance Hub</p>
+                <p class="lead">Welcome to the Meta-Layer Governance Hub - Deployment System Test</p>
 
                 <div class="row">
                     <div class="col-md-6">
