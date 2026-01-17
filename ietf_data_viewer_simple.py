@@ -3572,7 +3572,7 @@ def home():
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force [TEST]</p>
+                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force</p>
 
                 <div class="row">
                     <div class="col-md-6">
