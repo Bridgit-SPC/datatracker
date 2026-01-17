@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Follow {{ doc.name }}{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="row">
+        <div class="col-12">
+            <h1>Follow {{ doc.name }}</h1>
+            <p>Follow this document to receive email notifications when it changes or receives comments.</p>
+
+            <form method="post">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-bell"></i>
+                    Follow {{ doc.name }}
+                </button>
+                <a href="{% url 'ietf.doc.views_doc.document_main' name=doc.name %}" class="btn btn-secondary">Cancel</a>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

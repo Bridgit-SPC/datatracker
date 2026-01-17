@@ -1,0 +1,18 @@
+[Unit]
+Description=MLTF Datatracker Flask Application (Development)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/datatracker
+Environment=FLASK_ENV=development
+Environment=FLASK_PORT=8001
+ExecStart=/home/ubuntu/.pyenv/versions/3.9.18/bin/python3 /home/ubuntu/datatracker/ietf_data_viewer_simple.py
+Restart=always
+RestartSec=5
+Environment=PATH=/home/ubuntu/.pyenv/versions/3.9.18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

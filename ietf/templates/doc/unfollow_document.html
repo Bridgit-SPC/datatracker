@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Unfollow {{ doc.name }}{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="row">
+        <div class="col-12">
+            <h1>Unfollow {{ doc.name }}</h1>
+            <p>Stop following this document to no longer receive email notifications for changes or comments.</p>
+
+            <form method="post">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-warning">
+                    <i class="bi bi-bell-slash"></i>
+                    Unfollow {{ doc.name }}
+                </button>
+                <a href="{% url 'ietf.doc.views_doc.document_main' name=doc.name %}" class="btn btn-secondary">Cancel</a>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

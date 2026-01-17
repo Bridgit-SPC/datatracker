@@ -1,0 +1,42 @@
+MANUAL FIX STEPS FOR DEVELOPMENT ENVIRONMENT
+=============================================
+
+The code change is confirmed in the file. Follow these steps to apply it:
+
+STEP 1: Stop the development service
+--------------------------------------
+systemctl --user stop datatracker-dev.service
+
+STEP 2: Clear Python cache
+---------------------------
+cd /home/ubuntu/datatracker
+find . -type d -name __pycache__ -exec rm -r {} + 2>/dev/null
+find . -name "*.pyc" -delete
+
+STEP 3: Verify code change is in file
+--------------------------------------
+grep "Welcome to the Meta-Layer Governance Hub" ietf_data_viewer_simple.py
+(Should show: <p class="lead">Welcome to the Meta-Layer Governance Hub</p>)
+
+STEP 4: Start the development service
+--------------------------------------
+systemctl --user start datatracker-dev.service
+
+STEP 5: Wait and verify
+------------------------
+sleep 5
+systemctl --user status datatracker-dev.service
+
+STEP 6: Test the service
+-------------------------
+curl http://localhost:8001/ | grep "Welcome to the Meta-Layer Governance Hub"
+
+STEP 7: Check in browser
+-------------------------
+Visit: https://dev.rfc.themetalayer.org
+Hard refresh: Ctrl+Shift+R (or Cmd+Shift+R on Mac)
+
+ALTERNATIVE: Run the fix script
+--------------------------------
+cd /home/ubuntu/datatracker
+bash fix-dev.sh
