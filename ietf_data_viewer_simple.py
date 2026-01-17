@@ -3573,19 +3573,7 @@ def home():
         <div class="row">
             <div class="col-md-8">
                 <h1>MLTF</h1>
-                <div style="background-color: #ffcccc; border: 3px solid red; padding: 20px; margin: 20px 0; border-radius: 10px;">
-                    <h2 style="color: red; font-weight: bold;">🚨 DEPLOYMENT TEST SUCCESSFUL! 🚨</h2>
-                    <p style="color: red; font-size: 18px; font-weight: bold;">
-                        If you can see this red box, the deployment worked!
-                    </p>
-                    <p style="color: darkred;">
-                        Original text: "Welcome to the Meta-Layer Governance Hub"
-                    </p>
-                    <p style="color: darkred;">
-                        Version: 2026-01-17-final
-                    </p>
-                </div>
-                <p class="lead">Welcome to the Meta-Layer Governance Hub - Deployment System Test</p>
+                <p class="lead">Welcome to the Meta-Layer Governance Hub</p>
 
                 <div class="row">
                     <div class="col-md-6">
