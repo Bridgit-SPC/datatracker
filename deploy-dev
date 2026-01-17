@@ -1,0 +1,52 @@
+#!/bin/bash
+# Minimal dev deployment - writes results to file
+
+OUTPUT="/tmp/deploy-result.txt"
+echo "=== DEPLOYMENT START $(date) ===" > $OUTPUT
+
+echo "[1] Killing processes..." | tee -a $OUTPUT
+pkill -9 -f "python.*ietf_data" 2>&1 | tee -a $OUTPUT
+pkill -9 -f "python.*8001" 2>&1 | tee -a $OUTPUT
+sleep 3
+
+echo "[2] Stopping service..." | tee -a $OUTPUT
+systemctl --user stop datatracker-dev.service 2>&1 | tee -a $OUTPUT
+sleep 3
+
+echo "[3] Clearing cache..." | tee -a $OUTPUT
+cd /home/ubuntu/datatracker
+find . -type d -name __pycache__ -exec rm -rf {} + 2>&1 | tee -a $OUTPUT
+find . -name "*.pyc" -delete 2>&1 | tee -a $OUTPUT
+
+echo "[4] Verifying code..." | tee -a $OUTPUT
+if grep -q "Welcome to the Meta-Layer Governance Hub" ietf_data_viewer_simple.py; then
+    echo "✓ Code verified" | tee -a $OUTPUT
+else
+    echo "✗ Code NOT found!" | tee -a $OUTPUT
+    exit 1
+fi
+
+echo "[5] Starting service..." | tee -a $OUTPUT
+systemctl --user start datatracker-dev.service 2>&1 | tee -a $OUTPUT
+sleep 10
+
+echo "[6] Checking status..." | tee -a $OUTPUT
+systemctl --user status datatracker-dev.service --no-pager | head -10 | tee -a $OUTPUT
+
+echo "[7] Testing HTTP..." | tee -a $OUTPUT
+sleep 3
+HTTP_CODE=$(curl -s -o /tmp/homepage.html -w "%{http_code}" http://localhost:8001/ 2>&1)
+echo "HTTP Code: $HTTP_CODE" | tee -a $OUTPUT
+
+if grep -q "Welcome to the Meta-Layer Governance Hub" /tmp/homepage.html 2>/dev/null; then
+    echo "✓✓✓ SUCCESS - New text found!" | tee -a $OUTPUT
+else
+    echo "✗ New text NOT found in response" | tee -a $OUTPUT
+    echo "First 500 chars of response:" | tee -a $OUTPUT
+    head -c 500 /tmp/homepage.html | tee -a $OUTPUT
+fi
+
+echo "=== DEPLOYMENT END $(date) ===" >> $OUTPUT
+echo ""
+echo "Results saved to: $OUTPUT"
+echo "Homepage saved to: /tmp/homepage.html"

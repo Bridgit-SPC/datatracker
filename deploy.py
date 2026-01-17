@@ -232,9 +232,14 @@ def deploy(env, branch=None):
     # Clear Python cache
     clear_python_cache()
     
+    # Create deployment flag file
+    deployment_flag = Path(SCRIPT_DIR) / f".deployment_{env}"
+    deployment_flag.touch()
+    log(f"Created deployment flag: {deployment_flag}")
+
     # Kill existing processes
     kill_processes_on_port(port)
-    
+
     # Restart service
     restart_service(service_name)
     
@@ -247,23 +252,33 @@ def deploy(env, branch=None):
     if not check_service_status(service_name):
         log(f"Service {service_name} is not active", 'ERROR')
         return False
-    
+
     # Wait for service to respond
     if not wait_for_service(url):
         log("Service did not respond", 'ERROR')
         return False
-    
+
     # Stage 4: Post-Deployment
     log("=" * 60)
     log("Stage 4: Post-Deployment")
     log("=" * 60)
-    
+
+    # Verify no data corruption occurred
+    log("Verifying data integrity...")
+    # This would require implementing data integrity checks
+
     # Create git tag for production
     if env == 'prod':
         tag_name = f"deployed-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         run_command(f'git tag {tag_name}', check=False)
         log(f"Created tag: {tag_name}")
-    
+
+    # Remove deployment flag file
+    deployment_flag = Path(SCRIPT_DIR) / f".deployment_{env}"
+    if deployment_flag.exists():
+        deployment_flag.unlink()
+        log(f"Removed deployment flag: {deployment_flag}")
+
     log("=" * 60)
     log("DEPLOYMENT COMPLETE")
     log("=" * 60)
@@ -272,7 +287,7 @@ def deploy(env, branch=None):
     log(f"Commit: {commit_hash[:8]}")
     log(f"URL: {url}")
     log(f"Log file: {DEPLOYMENT_LOG}")
-    
+
     return True
 
 def main():

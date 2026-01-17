@@ -105,6 +105,52 @@ else:
     PORT = int(os.environ.get('FLASK_PORT', 8000))
     DEBUG = False
 
+# DEPLOYMENT SAFETY - Block data modifications during deployment
+deployment_flag_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), f".deployment_{'dev' if IS_DEVELOPMENT else 'prod'}")
+DEPLOYMENT_MODE = os.path.exists(deployment_flag_file)
+if DEPLOYMENT_MODE:
+    print("🚨 DEPLOYMENT MODE ENABLED - Data modifications blocked")
+
+def check_deployment_safety(operation="database operation"):
+    """Check if operations are allowed during deployment"""
+    if DEPLOYMENT_MODE:
+        error_msg = f"🚨 BLOCKED: {operation} not allowed during deployment"
+        print(error_msg)
+        raise RuntimeError(error_msg)
+
+def init_deployment_safety():
+    """Initialize deployment safety checks after database is set up"""
+    if DEPLOYMENT_MODE:
+        # Override SQLAlchemy session methods to check deployment safety
+        global original_add, original_commit, original_delete, original_create_all
+        original_add = db.session.add
+        original_commit = db.session.commit
+        original_delete = db.session.delete
+        original_create_all = db.create_all
+
+        def safe_add(instance):
+            check_deployment_safety("database add operation")
+            return original_add(instance)
+
+        def safe_commit():
+            check_deployment_safety("database commit operation")
+            return original_commit()
+
+        def safe_delete(instance):
+            check_deployment_safety("database delete operation")
+            return original_delete(instance)
+
+        def safe_create_all(*args, **kwargs):
+            check_deployment_safety("database schema creation")
+            return original_create_all(*args, **kwargs)
+
+        # Monkey patch the session and DDL methods
+        db.session.add = safe_add
+        db.session.commit = safe_commit
+        db.session.delete = safe_delete
+        db.create_all = safe_create_all
+        print("🚨 Database operations blocked during deployment")
+
 # Ensure instance directory exists
 os.makedirs(INSTANCE_DIR, exist_ok=True)
 
@@ -1413,6 +1459,20 @@ SUBMIT_TEMPLATE = """
     </div>
 </div>
 """
+
+@app.before_request
+def deployment_safety_check():
+    """Block data modifications during deployment"""
+    if DEPLOYMENT_MODE and request.method in ['POST', 'PUT', 'DELETE', 'PATCH']:
+        # Allow deployment endpoints and static files
+        if (request.path.startswith('/_deploy/') or
+            request.path.startswith('/static/') or
+            request.path in ['/login/', '/logout/']):
+            return
+        # Block all other data modifications
+        print(f"🚨 BLOCKED {request.method} {request.path} - Deployment mode active")
+        from flask import jsonify
+        return jsonify({'error': 'Data modifications disabled during deployment'}), 403
 
 @app.route('/submit/', methods=['GET', 'POST'])
 @require_auth
@@ -3572,7 +3632,7 @@ def home():
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force</p>
+                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force!</p>
 
                 <div class="row">
                     <div class="col-md-6">
@@ -5408,6 +5468,8 @@ def deployment_test():
     """
 
 if __name__ == '__main__':
+    # Initialize deployment safety checks
+    init_deployment_safety()
     # Initialize database on startup
     init_db()
     print(f"Starting MLTF Datatracker in {ENV} mode on port {PORT}")
