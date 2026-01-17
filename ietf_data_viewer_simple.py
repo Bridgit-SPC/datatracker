@@ -93,11 +93,6 @@ ENV = os.environ.get('FLASK_ENV', 'production').lower()
 IS_PRODUCTION = ENV == 'production'
 IS_DEVELOPMENT = ENV == 'development'
 
-# DEPLOYMENT SAFETY - Block all data modifications during deployment
-DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'false').lower() == 'true'
-if DEPLOYMENT_MODE:
-    print("🚨 DEPLOYMENT MODE ENABLED - Data modifications blocked")
-
 # Set up paths based on environment
 if IS_DEVELOPMENT:
     INSTANCE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance_dev')
@@ -3577,7 +3572,7 @@ def home():
     <div class="container mt-4">
         <div class="row">
             <div class="col-md-8">
-                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force [TEST]</p>
+                <p class="lead">Welcome to the Governance Hub for the Meta-Layer Task Force</p>
 
                 <div class="row">
                     <div class="col-md-6">
@@ -5289,20 +5284,6 @@ def reload_app():
         'message': 'Cache cleared. Service restart required.',
         'restart_command': 'systemctl --user restart datatracker-dev.service'
     })
-
-@app.before_request
-def deployment_safety_check():
-    """Block data modifications during deployment"""
-    if DEPLOYMENT_MODE and request.method in ['POST', 'PUT', 'DELETE', 'PATCH']:
-        # Allow deployment endpoints and static files
-        if (request.path.startswith('/_deploy/') or
-            request.path.startswith('/static/') or
-            request.path in ['/login/', '/logout/']):
-            return
-        # Block all other data modifications
-        print(f"🚨 BLOCKED {request.method} {request.path} - Deployment mode active")
-        from flask import jsonify
-        return jsonify({'error': 'Data modifications disabled during deployment'}), 403
 
 @app.route('/_deploy/status', methods=['GET'])
 def deployment_status():
