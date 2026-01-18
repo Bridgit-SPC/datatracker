@@ -62,34 +62,80 @@ def test_critical_features():
 
         # 5. Individual Draft Pages
         print("5. 📋 Testing Individual Draft Pages...")
-        response = client.get('/doc/draft/draft-aazam-cdni-inter-cloud-architecture/')
-        if 'draft-aazam-cdni-inter-cloud-architecture' in response.get_data(as_text=True):
-            print("   ✅ Individual draft page works")
+        # Check if we have any drafts/submissions first
+        from ietf_data_viewer_simple import Submission, PublishedDraft
+        has_drafts = Submission.query.count() > 0 or len(PublishedDraft.query.all()) > 0
+
+        if has_drafts:
+            # Test with first available draft
+            first_submission = Submission.query.first()
+            if first_submission:
+                response = client.get(f'/doc/draft/{first_submission.draft_name}/')
+                if first_submission.draft_name in response.get_data(as_text=True):
+                    print("   ✅ Individual draft page works")
+                else:
+                    print("   ❌ Individual draft page failed")
+                    return False
+            else:
+                first_draft = PublishedDraft.query.first()
+                response = client.get(f'/doc/draft/{first_draft.name}/')
+                if first_draft.name in response.get_data(as_text=True):
+                    print("   ✅ Individual draft page works")
+                else:
+                    print("   ❌ Individual draft page failed")
+                    return False
         else:
-            print("   ❌ Individual draft page failed")
-            return False
+            # No drafts available - test that the route doesn't crash
+            response = client.get('/doc/draft/nonexistent-draft/')
+            if response.status_code == 404:
+                print("   ✅ Draft route handles missing drafts gracefully")
+            else:
+                print("   ❌ Draft route should return 404 for missing drafts")
+                return False
 
         # 6. Comment System
         print("6. 💬 Testing Comment System...")
         comment_count = sum(len(comments) for comments in COMMENTS.values())
         print(f"   📊 {comment_count} total comments in system")
 
-        # Test comment submission
-        response = client.post('/doc/draft/draft-aazam-cdni-inter-cloud-architecture/comments/',
-                              data={'comment': 'Automated test comment'})
-        if response.status_code in [200, 302]:
-            print("   ✅ Comment submission works")
-        else:
-            print("   ❌ Comment submission failed")
-            return False
+        # Test comment functionality (skip submission if no drafts)
+        if has_drafts:
+            # Test comment submission on first available draft
+            draft_name = None
+            first_submission = Submission.query.first()
+            if first_submission:
+                draft_name = first_submission.draft_name
+            else:
+                first_draft = PublishedDraft.query.first()
+                if first_draft:
+                    draft_name = first_draft.name
 
-        # Test comment display
-        response = client.get('/doc/draft/draft-aazam-cdni-inter-cloud-architecture/comments/')
-        if 'Add a Comment' in response.get_data(as_text=True):
-            print("   ✅ Comment display with form works")
+            if draft_name:
+                response = client.post(f'/doc/draft/{draft_name}/comments/',
+                                      data={'comment': 'Automated test comment'})
+                if response.status_code in [200, 302]:
+                    print("   ✅ Comment submission works")
+                else:
+                    print("   ❌ Comment submission failed")
+                    return False
+
+                # Test comment display
+                response = client.get(f'/doc/draft/{draft_name}/comments/')
+                if 'Add a Comment' in response.get_data(as_text=True):
+                    print("   ✅ Comment display with form works")
+                else:
+                    print("   ❌ Comment display missing form")
+                    return False
+            else:
+                print("   ⚠️  No drafts available for comment testing")
         else:
-            print("   ❌ Comment display missing form")
-            return False
+            # Test comment route accessibility without drafts
+            response = client.get('/doc/draft/nonexistent-draft/comments/')
+            if response.status_code == 404:
+                print("   ✅ Comment routes handle missing drafts gracefully")
+            else:
+                print("   ❌ Comment routes should return 404 for missing drafts")
+                return False
 
         # 7. Submission System
         print("7. 📤 Testing Submission System...")

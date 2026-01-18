@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+from collections import defaultdict
+import time
 
 # Import file processing libraries
 try:
@@ -32,6 +34,26 @@ try:
     DOCX_SUPPORT = True
 except ImportError:
     DOCX_SUPPORT = False
+
+# Rate limiting for security
+rate_limit_store = defaultdict(list)
+
+def check_rate_limit(identifier, max_requests=5, window_seconds=300):
+    """Simple in-memory rate limiting"""
+    now = time.time()
+    key = f"{identifier}"
+
+    # Clean old entries
+    rate_limit_store[key] = [timestamp for timestamp in rate_limit_store[key]
+                           if now - timestamp < window_seconds]
+
+    # Check if under limit
+    if len(rate_limit_store[key]) >= max_requests:
+        return False
+
+    # Add current request
+    rate_limit_store[key].append(now)
+    return True
 
 # Database initialization
 def init_db():
@@ -162,6 +184,12 @@ DB_PATH = os.path.join(INSTANCE_DIR, DB_NAME)
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DB_PATH}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['DEBUG'] = DEBUG
+
+# Session security configuration
+app.config['SESSION_COOKIE_SECURE'] = not IS_DEVELOPMENT  # HTTPS only in production
+app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent XSS access to session cookie
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # CSRF protection
+
 db = SQLAlchemy(app)
 
 # Database Models
@@ -230,8 +258,29 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, index=True)
     password_hash = db.Column(db.String(255))
-    name = db.Column(db.String(100))
+
+    # Web3Auth fields
+    web3authVerifierId = db.Column(db.String(255), unique=True, index=True)  # Web3Auth unique identifier
+    typeOfLogin = db.Column(db.String(50))  # 'google', 'wallet', 'twitter', 'email_passwordless'
+
+    # Display name system (user-editable)
+    displayName = db.Column(db.String(50))  # User's chosen display name
+    displayNameSetAt = db.Column(db.DateTime)  # When user first set/changed it
+
+    # OAuth data (read-only reference)
+    oauthName = db.Column(db.String(100))  # Original name from OAuth provider
+    name = db.Column(db.String(100))  # Legacy field - will be deprecated
     email = db.Column(db.String(100), unique=True, index=True)
+    profileImage = db.Column(db.String(500))  # Avatar URL
+
+    # Wallet data (always visible)
+    evmAddress = db.Column(db.String(42), unique=True, index=True)  # EVM wallet address
+    solanaAddress = db.Column(db.String(44), unique=True, index=True)  # Solana wallet address
+
+    # Handle (unique identifier)
+    handle = db.Column(db.String(50), unique=True, index=True)  # Unique handle for user
+
+    # Other fields
     role = db.Column(db.String(20), default='user')  # admin, editor, user
     theme = db.Column(db.String(10), default='dark')  # light, dark, auto
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -2201,6 +2250,205 @@ def register():
     </div>
     """
     return render_template_string(BASE_TEMPLATE.format(title="Register - MLTF", theme="light", user_menu=user_menu, content=REGISTER_TEMPLATE))
+
+# Web3Auth API routes
+@app.route('/api/auth/web3auth', methods=['POST'])
+def web3auth_login():
+    """Web3Auth login endpoint"""
+    # Rate limiting: 10 requests per 5 minutes per IP
+    client_ip = request.remote_addr or request.environ.get('HTTP_X_FORWARDED_FOR', 'unknown')
+    if not check_rate_limit(f"web3auth_{client_ip}", max_requests=10, window_seconds=300):
+        return jsonify({'error': 'Rate limit exceeded. Try again later.'}), 429
+
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
+        verifierId = data.get('verifierId')
+        typeOfLogin = data.get('typeOfLogin')
+        email = data.get('email')
+        name = data.get('name')
+        profileImage = data.get('profileImage')
+        evmAddress = data.get('evmAddress')
+        solanaAddress = data.get('solanaAddress')
+
+        if not verifierId:
+            return jsonify({'error': 'verifierId required'}), 400
+
+        # Check if user exists in database
+        user = User.query.filter_by(web3authVerifierId=verifierId).first()
+
+        # If not, create user
+        if not user:
+            # Generate handle (use email or wallet address)
+            # Use a more secure approach to check existing handles
+            existing_handles = db.session.query(User.username).all()
+            existing_handles = [handle[0] for handle in existing_handles]
+            if typeOfLogin == 'wallet' and evmAddress:
+                # For wallet login, generate handle from wallet address
+                short_address = f"{evmAddress[:6]}...{evmAddress[-4:]}"
+                handle = f"wallet_{short_address}"
+                counter = 1
+                while handle in existing_handles:
+                    handle = f"wallet_{short_address}_{counter}"
+                    counter += 1
+            else:
+                # For social login, generate from email
+                base_handle = email.split('@')[0] if email else 'user'
+                base_handle = re.sub(r'[^a-zA-Z0-9_]', '', base_handle)
+                if len(base_handle) < 3:
+                    base_handle = 'user'
+                handle = base_handle
+                counter = 1
+                while handle in existing_handles:
+                    handle = f"{base_handle}{counter}"
+                    counter += 1
+
+            # Create user
+            user = User(
+                web3authVerifierId=verifierId,
+                typeOfLogin=typeOfLogin,
+                displayName=name if name else None,  # OAuth name for social login, null for wallet
+                displayNameSetAt=datetime.utcnow() if name else None,
+                oauthName=name,  # Store original OAuth name
+                email=email,
+                profileImage=profileImage,
+                evmAddress=evmAddress,
+                solanaAddress=solanaAddress,
+                username=handle,  # Use generated handle as username
+                handle=handle,  # Also store in handle field
+                role='user',
+                theme='dark'
+            )
+            db.session.add(user)
+            db.session.commit()
+
+        # Create session
+        session['user'] = user.username
+        session['theme'] = user.theme
+
+        # Return user data (excluding sensitive info)
+        user_data = {
+            'id': user.id,
+            'username': user.username,
+            'displayName': user.displayName,
+            'oauthName': user.oauthName,
+            'email': user.email,
+            'profileImage': user.profileImage,
+            'evmAddress': user.evmAddress,
+            'typeOfLogin': user.typeOfLogin,
+            'theme': user.theme
+        }
+
+        # Return sanitized user data (exclude sensitive fields)
+        safe_user_data = {
+            'id': user.id,
+            'username': user.username,
+            'displayName': user.displayName,
+            'oauthName': user.oauthName,
+            'email': user.email,
+            'profileImage': user.profileImage,
+            'evmAddress': user.evmAddress,
+            'solanaAddress': user.solanaAddress,
+            'typeOfLogin': user.typeOfLogin,
+            'theme': user.theme
+        }
+
+        return jsonify({'success': True, 'user': safe_user_data})
+
+    except Exception as e:
+        print(f"Web3Auth login error: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Authentication failed'}), 500
+
+@app.route('/api/user/me', methods=['GET'])
+def get_user_profile():
+    """Get current user profile"""
+    username = session.get('user')
+    if not username:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    user_data = {
+        'id': user.id,
+        'username': user.username,
+        'displayName': user.displayName,
+        'displayNameSetAt': user.displayNameSetAt.isoformat() if user.displayNameSetAt else None,
+        'oauthName': user.oauthName,
+        'email': user.email,
+        'profileImage': user.profileImage,
+        'evmAddress': user.evmAddress,
+        'solanaAddress': user.solanaAddress,
+        'typeOfLogin': user.typeOfLogin,
+        'theme': user.theme
+    }
+
+    # Return sanitized user data (exclude sensitive fields)
+    safe_user_data = {
+        'id': user.id,
+        'username': user.username,
+        'displayName': user.displayName,
+        'displayNameSetAt': user.displayNameSetAt.isoformat() if user.displayNameSetAt else None,
+        'oauthName': user.oauthName,
+        'email': user.email,
+        'profileImage': user.profileImage,
+        'evmAddress': user.evmAddress,
+        'solanaAddress': user.solanaAddress,
+        'typeOfLogin': user.typeOfLogin,
+        'theme': user.theme
+    }
+
+    return jsonify({'user': safe_user_data})
+
+@app.route('/api/user/display-name', methods=['PUT'])
+def update_display_name():
+    """Update user display name"""
+    username = session.get('user')
+    if not username:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    if not data or 'displayName' not in data:
+        return jsonify({'error': 'Display name required'}), 400
+
+    displayName = data['displayName'].strip()
+
+    # Validation
+    if not displayName:
+        return jsonify({'error': 'Display name cannot be empty'}), 400
+
+    if len(displayName) > 50:
+        return jsonify({'error': 'Display name must be 50 characters or less'}), 400
+
+    # Optional: Check for allowed characters
+    import re
+    if not re.match(r'^[a-zA-Z0-9\s\-_]+$', displayName):
+        return jsonify({'error': 'Display name can only contain letters, numbers, spaces, hyphens, and underscores'}), 400
+
+    # Update user
+    user.displayName = displayName
+    user.displayNameSetAt = datetime.utcnow()
+    db.session.commit()
+
+    return jsonify({'success': True, 'user': {
+        'id': user.id,
+        'displayName': user.displayName,
+        'displayNameSetAt': user.displayNameSetAt.isoformat()
+    }})
+
+@app.route('/api/auth/logout', methods=['POST'])
+def api_logout():
+    """API logout endpoint"""
+    session.pop('user', None)
+    return jsonify({'success': True})
 
 @app.route('/profile/', methods=['GET', 'POST'])
 @require_auth
